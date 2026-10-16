@@ -1,0 +1,9 @@
+Area,Finding,Recommendation
+Order Fulfillment,80.06% of orders are marked Delivered.,Monitor order status trends and investigate unresolved orders.
+Cancellations,5.00% of orders are marked Cancelled.,Analyze cancellation reasons and monitor monthly changes.
+Returns,5.00% of orders are marked Returned.,Review return reasons and refund handling.
+Product Categories,Electronics contributes 72.62% of delivered recorded amount.,Examine Electronics margins and opportunities in other categories.
+Payment Methods,UPI accounts for 51.39% of all orders.,Maintain a reliable UPI checkout experience.
+Customer Segments,Platinum customers contribute 93.96% of delivered recorded amount.,Validate tier definitions and develop appropriate retention campaigns.
+Coupons,Coupon orders have a lower observed average recorded amount per order.,Evaluate coupon effectiveness before changing discount strategy.
+Delivery Performance,Average delivery duration is similar across states.,Continue monitoring delivery performance by state.

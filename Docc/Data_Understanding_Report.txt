@@ -1,0 +1,615 @@
+============================================================
+        SALES DATA ANALYSIS & BUSINESS INSIGHTS
+              DATA UNDERSTANDING REPORT
+============================================================
+
+Project Objective
+-----------------
+The objective of this project is to analyze Indian e-commerce
+sales data, identify meaningful business insights, and
+eventually build machine learning models for sales prediction
+and customer segmentation.
+
+
+1. DATASETS
+-----------
+
+The project contains three datasets:
+
+1. sales.csv
+2. customers.csv
+3. products.csv
+
+
+Sales Dataset
+-------------
+Rows: 250,000
+Columns: 21
+
+Purpose:
+Contains transaction-level order information.
+
+Important columns include:
+- Order_ID
+- Customer_ID
+- Product_ID
+- Order_Date
+- Order_Time
+- Delivery_Date
+- Quantity
+- Unit_Price
+- Order_Value
+- Shipping_Cost
+- Coupon_Code
+- Coupon_Discount
+- Total_Amount
+- Payment_Mode
+- Order_Status
+- Rating
+- Review_Text
+- City
+- State
+- Customer_Age
+- Customer_Age_Group
+
+
+Customers Dataset
+-----------------
+Rows: 40,000
+Columns: 15
+
+Purpose:
+Contains customer master and demographic information.
+
+Important columns include:
+- Customer_ID
+- Customer_Name
+- Gender
+- Age
+- Age_Group
+- Date_of_Birth
+- Email
+- Phone
+- City
+- State
+- Pincode
+- Registration_Date
+- Customer_Tier
+- Total_Orders
+- Total_Spent
+
+
+Products Dataset
+----------------
+Rows: 2,000
+Columns: 12
+
+Purpose:
+Contains product master information.
+
+Important columns include:
+- Product_ID
+- Product_Name
+- Category
+- Brand
+- Original_Price
+- Discount_Percent
+- Discount_Amount
+- Selling_Price
+- Stock_Quantity
+- Weight_kg
+- Avg_Rating
+- Total_Reviews
+
+
+2. DATA RELATIONSHIPS
+---------------------
+
+The datasets are connected through Customer_ID and Product_ID.
+
+customers.csv
+      |
+      | Customer_ID
+      ↓
+sales.csv
+      |
+      | Product_ID
+      ↓
+products.csv
+
+
+Customer relationship:
+- Unique customers in customers.csv: 40,000
+- Unique customers appearing in sales.csv: 39,914
+- Customers with no orders: 86
+
+Product relationship:
+- Unique products in products.csv: 2,000
+- Unique products appearing in sales.csv: 2,000
+
+
+3. DATA INTEGRITY
+-----------------
+
+Duplicate records:
+- Sales duplicates: 0
+- Customer duplicates: 0
+- Product duplicates: 0
+
+Customer ID validation:
+- Unmatched Customer_ID values in sales: 0
+
+Product ID validation:
+- Unmatched Product_ID values in sales: 0
+
+Conclusion:
+The relationships between the three datasets are intact.
+
+
+4. DATA TYPES
+-------------
+
+Initially, the following date columns were stored as strings:
+
+- Order_Date
+- Delivery_Date
+- Order_Time
+
+They were converted to appropriate datetime/time formats.
+
+Order_Date:
+- Converted to datetime64
+
+Delivery_Date:
+- Converted to datetime64
+
+Order_Time:
+- Converted to time values
+
+
+5. DATE RANGE
+-------------
+
+Order Date:
+
+Earliest order:
+2024-06-01
+
+Latest order:
+2026-06-30
+
+Delivery Date:
+
+Earliest delivery:
+2024-06-03
+
+Latest delivery:
+2026-07-07
+
+The dataset contains approximately two years of transaction
+history.
+
+The delivery date extending beyond the final order date is
+reasonable because orders placed near the end of June can be
+delivered in July.
+
+
+6. MISSING VALUES
+-----------------
+
+Sales dataset contains missing values mainly in:
+
+Coupon_Code:
+199,815 missing values
+Approximately 79.9% of sales records.
+
+Rating:
+129,970 missing values
+Approximately 52.0% of sales records.
+
+Review_Text:
+129,970 missing values
+Approximately 52.0% of sales records.
+
+Customers dataset:
+No missing values.
+
+Products dataset:
+No missing values.
+
+
+7. COUPON CODE INVESTIGATION
+----------------------------
+
+Missing Coupon_Code records:
+199,815
+
+Among these records:
+
+Missing Coupon_Code + zero Coupon_Discount:
+199,815
+
+Missing Coupon_Code + non-zero Coupon_Discount:
+0
+
+Conclusion:
+
+All orders with a missing Coupon_Code have zero coupon discount.
+
+Therefore, missing Coupon_Code is interpreted as:
+
+"No Coupon Used"
+
+These records should NOT be removed during data cleaning.
+
+
+8. DUPLICATE ANALYSIS
+---------------------
+
+No completely duplicated rows were found in any dataset.
+
+Sales:
+0 duplicates
+
+Customers:
+0 duplicates
+
+Products:
+0 duplicates
+
+Conclusion:
+No duplicate-row removal is required based on the current
+analysis.
+
+
+9. ID ANALYSIS
+--------------
+
+Sales:
+- Order_ID unique values: 250,000
+- Customer_ID unique values: 39,914
+- Product_ID unique values: 2,000
+
+Customers:
+- Customer_ID unique values: 40,000
+
+Products:
+- Product_ID unique values: 2,000
+
+Important finding:
+
+Every Order_ID is unique.
+
+Therefore, each row in sales.csv represents one order/
+transaction.
+
+
+10. NUMERICAL DATA VALIDATION
+-----------------------------
+
+Quantity:
+- Minimum: 1
+- Maximum: 3
+
+Unit Price:
+- Minimum: 26.13
+- Maximum: 136,973.33
+
+Customer Age:
+- Minimum: 18
+- Maximum: 75
+
+These ranges are considered reasonable.
+
+
+11. INVALID NUMERICAL VALUES
+----------------------------
+
+The following checks were performed:
+
+Quantity <= 0:
+0
+
+Unit Price <= 0:
+0
+
+Shipping Cost < 0:
+0
+
+Coupon Discount < 0:
+0
+
+Total Amount < 0:
+5
+
+Conclusion:
+
+No invalid quantity, unit price, shipping cost, or coupon
+discount values were found.
+
+
+12. NEGATIVE TOTAL AMOUNT INVESTIGATION
+---------------------------------------
+
+There are 5 records with negative Total_Amount.
+
+These records were investigated individually.
+
+The negative values occur because:
+
+Total_Amount =
+Order_Value + Shipping_Cost - Coupon_Discount
+
+In these records, the coupon discount is ₹100 while the
+order value plus shipping cost is less than ₹100.
+
+Four of the records have Delivered status and one has
+Cancelled status.
+
+Because there are only 5 such records out of 250,000
+transactions, they are extremely rare.
+
+Decision:
+
+The records will be retained rather than deleted.
+
+They will be documented as data-quality anomalies.
+
+
+13. ORDER VALUE VALIDATION
+--------------------------
+
+The relationship:
+
+Order_Value = Quantity × Unit_Price
+
+was tested.
+
+Maximum calculation difference:
+
+5.82 × 10^-11
+
+This is effectively zero and is attributed to floating-point
+precision.
+
+Conclusion:
+
+Order_Value is mathematically derived from Quantity and
+Unit_Price.
+
+
+Important ML consideration:
+
+Quantity and Unit_Price should NOT be used to predict
+Order_Value because this would create data leakage/trivial
+prediction.
+
+Instead, the ML project will focus on predicting future sales
+using historical/time-based information.
+
+
+14. PRODUCT PRICE VALIDATION
+----------------------------
+
+The following relationships were tested:
+
+Discount_Amount =
+Original_Price × Discount_Percent / 100
+
+Selling_Price =
+Original_Price - Discount_Amount
+
+Maximum discount calculation difference:
+0.005
+
+Maximum selling price calculation difference:
+1.455 × 10^-11
+
+These differences are negligible.
+
+Conclusion:
+
+Product pricing calculations are internally consistent.
+
+
+15. CATEGORICAL DATA ANALYSIS
+-----------------------------
+
+Payment Mode:
+
+UPI:
+128,474
+
+COD:
+82,093
+
+Debit Card:
+28,856
+
+Credit Card:
+10,577
+
+
+Order Status:
+
+Delivered:
+200,139
+
+Cancelled:
+12,507
+
+Returned:
+12,493
+
+Shipped:
+12,459
+
+Processing:
+12,402
+
+
+Customer Age Group:
+
+26-35:
+87,847
+
+18-25:
+61,594
+
+36-45:
+50,169
+
+46-55:
+30,359
+
+56-65:
+15,176
+
+65+:
+4,855
+
+
+Customer Gender:
+
+Male:
+20,003
+
+Female:
+19,997
+
+
+Customer Tier:
+
+Platinum:
+27,349
+
+Gold:
+6,692
+
+Silver:
+5,959
+
+
+Product Categories:
+
+Electronics:
+290
+
+Fashion:
+285
+
+Home:
+285
+
+Beauty:
+285
+
+Sports:
+285
+
+Books:
+285
+
+Grocery:
+285
+
+
+16. GENERAL DATA QUALITY OBSERVATIONS
+-------------------------------------
+
+The categorical values were inspected for obvious spelling,
+capitalization, and naming inconsistencies.
+
+No major inconsistencies were found.
+
+The dataset appears to have a highly structured/synthetic
+distribution in several areas, such as product categories
+and brand counts.
+
+Therefore, business insights should be interpreted carefully
+and should not automatically be assumed to represent actual
+real-world Indian e-commerce behavior.
+
+
+17. IMPORTANT FINDINGS
+----------------------
+
+1. The dataset contains 250,000 unique orders.
+
+2. Approximately 39,914 customers have placed orders.
+
+3. There are 40,000 customers in the customer master.
+
+4. 86 customers currently have no transaction records.
+
+5. All sales Customer_ID values match the customer master.
+
+6. All sales Product_ID values match the product master.
+
+7. No duplicate rows were found.
+
+8. Order_Value is completely derived from Quantity and
+   Unit_Price.
+
+9. Product pricing calculations are internally consistent.
+
+10. Missing Coupon_Code consistently represents orders with
+    no coupon discount.
+
+11. Five negative Total_Amount values were identified and
+    investigated.
+
+12. No invalid Quantity, Unit_Price, Shipping_Cost, or
+    Coupon_Discount values were found.
+
+13. Rating and Review_Text have substantial missing values,
+    which likely represent orders without submitted reviews.
+
+
+18. DATA UNDERSTANDING CONCLUSION
+---------------------------------
+
+The three datasets have been thoroughly examined in terms of:
+
+- Structure
+- Size
+- Data types
+- Relationships
+- Missing values
+- Duplicate records
+- Unique identifiers
+- Date ranges
+- Numerical distributions
+- Categorical values
+- Business-rule consistency
+- Pricing calculations
+- Transaction anomalies
+
+The datasets are sufficiently understood to proceed to the
+next stage of the project.
+
+DATA UNDERSTANDING: COMPLETED
+
+
+NEXT PHASE
+----------
+
+The next phase is:
+
+DATA CLEANING
+
+The cleaning stage will carefully handle:
+- Missing values
+- Data types
+- Categorical representations
+- Potential anomalies
+- Derived/duplicate information
+- Data consistency
+
+No data will be removed or modified without first identifying
+the business reason for doing so.
+
+
+============================================================
+                    END OF REPORT
+============================================================

@@ -1,0 +1,13 @@
+KPI,Value
+Total Orders,250000.0
+Delivered Orders,200139.0
+Delivered Order Rate (%),80.06
+Cancelled Orders,12507.0
+Cancellation Rate (%),5.0
+Returned Orders,12493.0
+Return Rate (%),5.0
+All-Status Recorded Amount (₹),5930693254.3
+Delivered Recorded Amount (₹),4741566354.41
+Average Delivered Order Amount (₹),23691.37
+Unique Customers,39914.0
+Customers with Delivered Orders,39726.0

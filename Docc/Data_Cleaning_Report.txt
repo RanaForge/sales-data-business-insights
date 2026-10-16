@@ -1,0 +1,24 @@
+## Data Cleaning Summary
+
+The sales dataset was cleaned and validated without removing any transaction records.
+
+Key cleaning activities performed:
+- Checked and confirmed no duplicate transaction rows.
+- Confirmed that `Order_ID` is unique for every transaction.
+- Converted `Order_Date` and `Delivery_Date` to datetime format.
+- Converted `Registration_Date` and `Date_of_Birth` in the customer dataset to datetime.
+- Replaced missing `Coupon_Code` values with `"No Coupon"` because missing coupon codes were associated with zero coupon discount.
+- Replaced missing `Review_Text` values with `"No Review"`.
+- Retained missing `Rating` values because they represent transactions where customers did not provide a rating.
+- Created `Delivery_Days` from the difference between delivery date and order date.
+- Investigated negative `Total_Amount` values and identified them as rare business-rule anomalies caused by coupon discounts exceeding the order value plus shipping cost.
+- Validated customer and product relationships with the transaction data.
+- Checked categorical columns for leading/trailing whitespace; no issues were found.
+- Validated data types and confirmed that the columns are suitable for analysis.
+
+Final validation:
+- Rows: 250,000
+- Columns: 22
+- Duplicate rows: 0
+- Duplicate Order IDs: 0
+- Remaining missing values: 129,970, all in `Rating`

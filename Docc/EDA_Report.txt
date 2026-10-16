@@ -1,0 +1,162 @@
+EXPLORATORY DATA ANALYSIS (EDA) REPORT
+Sales Data Analysis & Business Insights Project
+
+PURPOSE
+This report summarizes data understanding, cleaning, feature engineering, exploratory analysis, RFM customer segmentation, and validation for the Indian E-Commerce Sales Analytics dataset.
+
+1. DATASET OVERVIEW
+- Sales: 250,000 records and 21 original columns.
+- Customers: 40,000 records and 15 columns.
+- Products: 2,000 records and 12 columns.
+- Sales.Customer_ID links to Customers.Customer_ID.
+- Sales.Product_ID links to Products.Product_ID.
+- Order_ID is unique for each sales record.
+- Sales contains 39,914 unique purchasing customers. The customer master contains 40,000 customers, so 86 customers have no sales records.
+- All sales customer and product IDs match their respective master datasets.
+- No duplicate full rows were found in the original sales data.
+
+2. DATA CLEANING AND VALIDATION
+- Order_Date ranges from 2024-06-01 to 2026-06-30. Delivery_Date extends through 2026-07-07.
+- Coupon_Code was missing in 199,815 records (79.93%); these were labeled "No Coupon".
+- Review_Text was missing in 129,970 records; these were labeled "No Review".
+- Rating remains missing in 129,970 records (about 51.99%) and was not filled with invented values.
+- No duplicate rows or duplicate Order_ID values were found.
+- Delivery duration ranged from 2 to 7 days, averaging about 4.50 days; no negative durations were found.
+- Product pricing fields were internally consistent, and Order_Value matched Quantity multiplied by Unit_Price.
+- Five records had negative Total_Amount because coupon discounts exceeded Order_Value plus Shipping_Cost. Four were Delivered and one was Cancelled. The four negative Delivered records total -₹51.41.
+- Customer_Age in sales matched the supplied age in the customer master. DOB-based ages were one year higher for all 40,000 customers as of 2026-06-30, so the supplied age was retained.
+- Customer master Total_Orders and Total_Spent differed from transaction-derived values for 28,523 customers. These master fields may reflect a different snapshot and were not overwritten.
+- Customer registration dates ranged from 2023-06-01 to 2024-05-31, and no orders predated registration.
+
+3. FEATURE ENGINEERING
+Created features include calendar fields (year, month, quarter, weekday, weekend indicator, and order hour), Delivery_Days, Delivery_Speed_Category, Has_Coupon, Has_Review, Is_Returned, Is_Cancelled, Is_Delivered, customer attributes and tenure, joined product attributes, and Product_Price_Category:
+- Budget: selling price <= ₹5,000
+- Mid-Range: selling price > ₹5,000 and <= ₹20,000
+- Premium: selling price > ₹20,000
+
+Daily time-series features include 1-day, 7-day, and 30-day revenue lags and 7-day and 30-day rolling means. Rolling calculations were shifted to avoid using current-day information in prior-period features.
+The enriched sales dataset contains 250,000 rows and 50 columns. The daily time series contains 760 consecutive dates from 2024-06-01 through 2026-06-30.
+
+4. ORDER STATUS AND RECORDED AMOUNTS
+- Total orders: 250,000
+- Delivered: 200,139 (80.06%)
+- Cancelled: 12,507 (about 5.00%)
+- Returned: 12,493 (about 5.00%)
+- Shipped: 12,459 (about 4.98%)
+- Processing: 12,402 (about 4.96%)
+- All-status Total_Amount sum: ₹5,930,693,254.30 (about ₹593.07 crore)
+- Delivered Total_Amount sum: ₹4,741,566,354.41 (about ₹474.16 crore)
+
+These are sums of the dataset's Total_Amount field across the specified statuses. They should be described as recorded amounts, not automatically as recognized revenue, retained sales, or profit. Returned-order amounts may not represent refunds.
+
+5. MONTHLY SALES TRENDS
+Monthly recorded amounts were generally stable, commonly around ₹2.3–₹2.48 crore, with order volumes often around 9,800–10,400 per month. February 2025 and February 2026 showed dips; shorter month length may partly explain them. June 2026 is a full month in the dataset. The initial trend analysis included all order statuses, so it represents recorded amounts across statuses rather than delivered-only revenue.
+
+6. PRODUCT CATEGORY PERFORMANCE (DELIVERED ORDERS)
+- Electronics: 53,576 orders; about ₹344.33 crore; 72.62% of delivered recorded amount; average amount per order about ₹64,269.
+- Home: 26,877 orders; about ₹57.33 crore; 12.09%.
+- Sports: 23,410 orders; about ₹37.94 crore; 8.00%.
+- Fashion: 39,842 orders; about ₹26.66 crore; 5.62%.
+- Grocery: 26,778 orders; about ₹3.35 crore; 0.71%.
+- Beauty: 13,427 orders; about ₹3.07 crore; 0.65%.
+- Books: 16,229 orders; about ₹1.49 crore; 0.31%.
+
+Electronics dominates delivered recorded amount, while Fashion has the highest delivered order count among these categories. Amounts do not represent profit because cost and margin data are unavailable.
+
+7. PAYMENT METHOD ANALYSIS (ALL STATUSES)
+- UPI: 128,474 orders (51.39%); about ₹317.64 crore recorded amount; average about ₹24,724 per order.
+- COD: 82,093 orders (32.84%); about ₹184.19 crore; average about ₹22,437.
+- Debit Card: 28,856 orders (11.54%); about ₹63.17 crore; average about ₹21,892.
+- Credit Card: 10,577 orders (4.23%); about ₹28.07 crore; average about ₹26,535.
+
+UPI had the highest order volume. Credit Card had the highest average recorded amount per order. Cancellation and return rates by payment mode were broadly similar, about 4.9%–5.1%; no causal conclusion was drawn.
+
+8. GEOGRAPHIC PERFORMANCE (DELIVERED ORDERS)
+Top states by delivered recorded amount:
+- UP: about ₹61.87 crore (13.05%)
+- Rajasthan: about ₹60.47 crore (12.75%)
+- Haryana: about ₹59.77 crore (12.61%)
+- Maharashtra: about ₹48.48 crore (10.22%)
+- Punjab: about ₹47.68 crore (10.06%)
+- Gujarat: about ₹47.60 crore (10.04%)
+- Delhi: about ₹38.17 crore (8.05%)
+- Tamil Nadu: about ₹37.60 crore (7.93%)
+- West Bengal: about ₹36.47 crore (7.69%)
+- Karnataka: about ₹36.04 crore (7.60%)
+
+Delhi had the highest average recorded amount per delivered order among the top 10 states, at about ₹24,443. Average delivery duration was similar across states (about 4.49–4.51 days). Slow-delivery shares were about 32.9%–33.8%, showing no clear state-level outlier in this analysis.
+
+9. CANCELLATION AND RETURN TRENDS
+Monthly cancellation and return rates were generally around 4.6%–5.3%. Rates were somewhat higher in May and June 2026 than in several earlier months, but no cause was established. Continue monitoring before making operational decisions.
+
+10. CUSTOMER TIER ANALYSIS (DELIVERED ORDERS)
+- Platinum: 27,349 customers; 153,476 delivered orders; about ₹445.54 crore; 93.96% of delivered recorded amount; average 5.61 delivered orders per customer; about ₹162,908 per customer.
+- Gold: 6,692 customers; 28,674 delivered orders; about ₹23.24 crore; 4.90%; average 4.28 orders per customer; about ₹34,733 per customer.
+- Silver: 5,685 customers; 17,989 delivered orders; about ₹5.38 crore; 1.13%; average 3.16 orders per customer; about ₹9,458 per customer.
+
+Platinum customers account for most delivered recorded amount. Tier assignment rules were not provided, so this report does not assume spending alone determines tier.
+
+11. COUPON AND DISCOUNT ANALYSIS
+For delivered orders:
+- No coupon: 159,983 orders (79.93%); average recorded amount per order about ₹23,816.
+- Coupon used: 40,156 orders (20.07%); average recorded amount per order about ₹23,194.
+- Coupon discounts on coupon orders totaled about ₹50,056,422.55 (₹5.01 crore).
+- Average coupon discount among coupon orders was about ₹1,246.55.
+
+Coupon orders had an observed average recorded amount about ₹623 lower than orders without coupons, but this does not establish that coupons caused lower order values. Coupon_Discount is a monetary amount, separate from the product-level Discount_Percent field. Product discount percentage averaged about 27.47%, with a range of 5%–50%.
+
+12. RFM CUSTOMER SEGMENTATION
+RFM segmentation used Delivered orders only, with 2026-07-01 as the reference date. The RFM dataset contains 39,726 customers.
+K-Means was evaluated for K=2 through K=8. K=2 had the highest sampled silhouette score (about 0.337); K=3 was selected for business exploration after considering the elbow pattern and interpretability. The three-cluster choice is exploratory, not proven statistically optimal.
+
+Provisional segments:
+- At-Risk Low-Spending: 10,154 customers (25.56%); average recency 246.38 days; average frequency 2.76 orders; average monetary value about ₹30,174.
+- Recent High-Engagement: 10,534 customers (26.52%); average recency 24.19 days; average frequency 6.25 orders; average monetary value about ₹146,931.
+- Established High-Spending: 19,038 customers (47.92%); average recency 163.33 days; average frequency 5.59 orders; average monetary value about ₹151,666.
+
+Segment labels are provisional descriptions; K-Means cluster IDs have no inherent business meaning. Monetary value is based on Total_Amount for delivered orders.
+
+13. FINAL RECONCILIATION AND QUALITY REVIEW
+All checks below passed:
+- 250,000 sales records and 250,000 unique orders; one row per order.
+- Status counts reconcile to total orders.
+- 39,914 unique purchasing customers and 2,000 unique products.
+- 200,139 delivered orders.
+- Delivered recorded amount: ₹4,741,566,354.41.
+- All-status recorded amount: ₹5,930,693,254.30.
+- No missing values in key fields: Order_ID, Customer_ID, Product_ID, Order_Date, Order_Status, Category, and Total_Amount.
+- Category amounts reconcile exactly to the overall delivered recorded amount; difference ₹0.00 and rounded category shares total 100%.
+- Daily time series has 760 continuous dates from 2024-06-01 to 2026-06-30.
+- Expected missing time-series values: Revenue_Lag_1 = 1, Revenue_Lag_7 = 7, Revenue_Lag_30 = 30, Revenue_Rolling_Mean_7 = 7, Revenue_Rolling_Mean_30 = 30.
+- Four delivered orders have negative Total_Amount values totaling -₹51.41. These remain documented anomalies.
+
+14. BUSINESS OBSERVATIONS AND RECOMMENDATIONS
+1. Electronics accounts for 72.62% of delivered recorded amount. Examine category margins and concentration before strategic decisions.
+2. Fashion has a high delivered order count but a much smaller amount share. Explore product mix, pricing, bundles, and cross-selling.
+3. UPI is the most-used payment method. Maintain a reliable UPI checkout while supporting other methods.
+4. Platinum customers contribute 93.96% of delivered recorded amount. Validate tier definitions and customer concentration; consider retention programs for high-value customers and engagement campaigns for other segments.
+5. Monitor cancellation and return rates, including the higher observations in May and June 2026.
+6. Test coupon effectiveness with a controlled analysis before expanding or reducing discounts.
+7. Current analysis does not identify a strong geographic delivery-performance outlier.
+8. Investigate negative Total_Amount records and confirm definitions of Total_Amount, returns, and refunds before financial reporting or modeling.
+
+15. LIMITATIONS
+- Definitions for Total_Amount, recognized revenue, refunds, and profit are not fully documented.
+- Cost and margin data are unavailable, so profitability cannot be calculated.
+- Customer tier assignment rules are unknown.
+- Coupon comparisons are descriptive, not causal.
+- Differences in cancellation and return rates have not been tested for statistical significance.
+- RFM clustering is exploratory; validate cluster usefulness before using segments operationally.
+- Missing ratings were retained because no valid replacement values were available.
+- Customer master summary fields differ from transaction-derived totals for many customers and may represent a different snapshot.
+
+16. CONCLUSION AND NEXT STEPS
+EDA is complete for the current project scope. Dataset relationships, quality issues, major patterns, customer segments, and reconciliation checks have been documented.
+Main findings include Electronics' dominance in delivered recorded amount, the high recorded contribution of Platinum-tier customers, UPI's leading order share, broadly stable monthly sales, and similar delivery times across states.
+
+Next steps:
+1. Create a clearly defined business KPI summary.
+2. Build a sales forecasting model using a chronological train/test split, leakage-safe features, baseline comparison, and MAE/RMSE evaluation.
+3. Integrate KPIs, charts, customer segments, and forecasting results into a Streamlit dashboard.
+
+END OF REPORT
