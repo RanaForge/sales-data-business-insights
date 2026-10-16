@@ -1,5 +1,11 @@
 # SalesVision Dashboard
 
+🚀 **Live Dashboard:** [Open SalesVision Dashboard](https://salesvision-dashboard-ranaforge.streamlit.app)
+
+Explore interactive e-commerce sales analytics, business insights, India sales maps, and sales forecasting.
+
+## Project Overview
+
 ### Indian E-Commerce Sales Analysis & Next-Day Sales Forecasting
 
 SalesVision is an interactive data analytics dashboard built to explore
@@ -418,9 +424,9 @@ This project demonstrates practical work in data analysis, interactive
 dashboards, geographic visualization, and introductory machine-learning
 forecasting.
 
--   **GitHub:** Add your GitHub profile URL here.
--   **Portfolio:** Add your portfolio website URL here.
--   **LinkedIn:** Add your LinkedIn profile URL here.
+-   **GitHub:** https://github.com/RanaForge.
+-   **Portfolio:** https://ranaforge.github.io/ganesh-portfolio/.
+-   **LinkedIn:** https://www.linkedin.com/in/gcr501.
 
 ------------------------------------------------------------------------
 
