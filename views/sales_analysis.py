@@ -1,813 +1,514 @@
+"""
+Sales Analysis page: a deeper look than the Overview.
 
+The Overview answers "how are we doing?". This page answers:
+    what sells            category and top products / brands
+    how big are orders    order-size bands, median vs average
+    how customers pay     payment modes and coupons
+    where                 states
+    how orders are fulfilled   delivery time and outcome check
+
+A scope switch (Delivered / All orders) controls every number on the page
+except the delivery-time and outcome panels, which have their own definition.
+Delivered is the default so the totals agree with the Overview.
+"""
+import numpy as np
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
-# ==================================================
-# 1. SALESVISION COLORS
-# ==================================================
-NAVY = "#172554"
-INDIGO = "#4F46E5"
-TEAL = "#0F9FA8"
-LIGHT_INDIGO = "#A5B4FC"
-CORAL = "#F97373"
-AMBER = "#F59E0B"
-BLUE = "#0EA5E9"
-SLATE = "#64748B"
+from utils import ui
+from utils.analytics import (
+    WEEK_RULE,
+    period_label,
+    prepare_sales,
+    previous_period_slice,
+)
 
-CHART_COLORS = [INDIGO, TEAL, BLUE, AMBER, CORAL, "#8B5CF6", "#14B8A6"]
+EXTRA_COLUMNS = [
+    "Order_ID", "Payment_Mode", "Product_ID", "Delivery_Date",
+    "Order_Value", "Coupon_Discount",
+]
+SCOPES = ["Delivered", "All orders"]
 
-
-# ==================================================
-# 2. SHARED CHART STYLING
-# ==================================================
-def style_chart(fig, height=380):
-    """Apply a consistent SalesVision chart theme."""
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
-        font=dict(family="Arial, sans-serif", color=NAVY, size=12),
-        margin=dict(l=25, r=35, t=65, b=40),
-        height=height,
-        hoverlabel=dict(bgcolor=NAVY, font_color="#FFFFFF", font_size=12),
-        legend=dict(
-            title_text="",
-            font=dict(color=NAVY, size=11),
-            bgcolor="rgba(255,255,255,0)",
-        ),
-    )
-    fig.update_xaxes(
-        gridcolor="#E8EDF4",
-        linecolor="#CBD5E1",
-        tickfont=dict(color="#475569"),
-        title_font=dict(color=NAVY),
-        zeroline=False,
-    )
-    fig.update_yaxes(
-        gridcolor="#E8EDF4",
-        linecolor="#CBD5E1",
-        tickfont=dict(color="#475569"),
-        title_font=dict(color=NAVY),
-        zeroline=False,
-    )
-    return fig
+# (lower edge, upper edge, label) in rupees
+SIZE_BANDS = [
+    (0, 1_000, "Under ₹1K"),
+    (1_000, 5_000, "₹1K to ₹5K"),
+    (5_000, 20_000, "₹5K to ₹20K"),
+    (20_000, 50_000, "₹20K to ₹50K"),
+    (50_000, 100_000, "₹50K to ₹1L"),
+    (100_000, np.inf, "Over ₹1L"),
+]
 
 
 # ==================================================
-# 3. FORMATTING HELPERS
+# 1. DATA HELPERS
 # ==================================================
-def format_inr(value):
-    return f"₹{float(value):,.2f}"
-
-
-def format_crore(value):
-    return f"₹{float(value) / 1e7:.2f} Cr"
-
-
-def format_compact_inr(value):
-    """Format amounts compactly for KPI cards."""
-    value = float(value)
-
-    if abs(value) >= 1e7:
-        return f"₹{value / 1e7:.2f} Cr"
-    if abs(value) >= 1e5:
-        return f"₹{value / 1e5:.2f} lakh"
-    if abs(value) >= 1e3:
-        return f"₹{value / 1e3:.1f} K"
-
-    return f"₹{value:,.0f}"
-
-
-# ==================================================
-# 4. DATA PREPARATION
-# ==================================================
-def prepare_sales(sales):
-    """Prepare a copy of the filtered sales data."""
-    df = sales.copy()
-
-    if "Order_Date" in df.columns:
-        df["Order_Date"] = pd.to_datetime(
-            df["Order_Date"], errors="coerce"
-        )
-
-    if "Total_Amount" in df.columns:
-        df["Total_Amount"] = pd.to_numeric(
-            df["Total_Amount"], errors="coerce"
-        )
-
-    if "Order_Status" in df.columns:
-        df["Order_Status"] = (
-            df["Order_Status"]
-            .fillna("Unknown")
-            .astype(str)
-            .str.strip()
-            .str.title()
-        )
-
-    for column in ["Category", "Payment_Mode", "State"]:
-        if column in df.columns:
-            df[column] = (
-                df[column]
-                .fillna("Unknown")
-                .astype(str)
-                .str.strip()
-                .replace("", "Unknown")
-            )
-
+def apply_scope(df, scope):
+    """Delivered orders only, or every order."""
+    if scope == "Delivered":
+        return df[df["Order_Status"].eq("delivered")]
     return df
 
 
-# ==================================================
-# 5. RENDER SALES ANALYSIS
-# ==================================================
-def render(sales, customers, products):
-    """Render the interactive Sales Analysis page."""
-
-    st.markdown("## Sales Analysis")
-    st.caption(
-        "Explore recorded order amounts, category performance, "
-        "payment preferences and state-level comparisons."
-    )
-
-    if sales.empty:
-        st.warning(
-            "No sales records match the selected date and state filters."
-        )
-        return
-
-    df = prepare_sales(sales)
-
-    required_columns = {"Order_Status", "Total_Amount"}
-    if not required_columns.issubset(df.columns):
-        st.error(
-            "Sales data must contain Order_Status and Total_Amount."
-        )
-        return
-
-    # --------------------------------------------------
-    # Selected date range
-    # --------------------------------------------------
-    if "Order_Date" in df.columns:
-        valid_dates = df["Order_Date"].dropna()
-        if not valid_dates.empty:
-            st.caption(
-                f"Showing data from {valid_dates.min():%d %b %Y} "
-                f"to {valid_dates.max():%d %b %Y}"
-            )
-
-    # ==================================================
-    # 6. SALES PERFORMANCE KPIs
-    # ==================================================
-    total_orders = len(df)
-    total_amount = df["Total_Amount"].sum()
-    average_order_amount = (
-        total_amount / total_orders if total_orders else 0
-    )
-
-    cancelled_orders = df["Order_Status"].eq("Cancelled").sum()
-    cancellation_rate = (
-        cancelled_orders / total_orders * 100 if total_orders else 0
-    )
-
-    st.markdown("### Sales Performance")
-    k1, k2, k3, k4 = st.columns(4, gap="medium")
-
-    k1.metric("Total Orders", f"{total_orders:,}")
-    k2.metric(
-        "Recorded Order Amount",
-        format_crore(total_amount),
-        help="Sum of recorded Total_Amount for the filtered records.",
-    )
-    k3.metric(
-        "Average Order Amount",
-        format_compact_inr(average_order_amount),
-        help="Recorded order amount divided by the number of orders.",
-    )
-    k4.metric("Cancellation Rate", f"{cancellation_rate:.2f}%")
-
-    st.caption(
-        "Recorded order amounts are based on Total Amount. "
-        "They are not profit or verified accounting revenue."
-    )
-    st.divider()
-
-    # ==================================================
-    # 7. DAILY / MONTHLY SALES TREND
-    # ==================================================
-    st.markdown("### Sales Trend")
-
-    trend_mode = st.radio(
-        "Trend frequency",
-        options=["Daily", "Monthly"],
-        horizontal=True,
-        key="sales_analysis_trend_frequency",
-    )
-
-    if "Order_Date" in df.columns:
-        trend_source = df.dropna(subset=["Order_Date"]).copy()
-
-        if not trend_source.empty:
-            if trend_mode == "Daily":
-                trend_source["Period"] = (
-                    trend_source["Order_Date"].dt.normalize()
-                )
-                moving_window = 7
-                moving_label = "7-Day Moving Average"
-                date_format = "%b %d\n%Y"
-                period_format = "%d %b %Y"
-            else:
-                trend_source["Period"] = (
-                    trend_source["Order_Date"]
-                    .dt.to_period("M")
-                    .dt.to_timestamp()
-                )
-                moving_window = 3
-                moving_label = "3-Month Moving Average"
-                date_format = "%b %Y"
-                period_format = "%b %Y"
-
-            order_count_column = (
-                "Order_ID"
-                if "Order_ID" in trend_source.columns
-                else "Total_Amount"
-            )
-
-            trend = (
-                trend_source.groupby("Period", as_index=False)
-                .agg(
-                    Total_Amount=("Total_Amount", "sum"),
-                    Orders=(order_count_column, "count"),
-                )
-                .sort_values("Period")
-            )
-
-            frequency = "D" if trend_mode == "Daily" else "MS"
-            complete_periods = pd.date_range(
-                start=trend["Period"].min(),
-                end=trend["Period"].max(),
-                freq=frequency,
-            )
-
-            trend = (
-                trend.set_index("Period")
-                .reindex(complete_periods, fill_value=0)
-                .rename_axis("Period")
-                .reset_index()
-            )
-
-            trend["Moving_Average"] = (
-                trend["Total_Amount"]
-                .rolling(moving_window, min_periods=1)
-                .mean()
-            )
-
-            highest = trend.loc[trend["Total_Amount"].idxmax()]
-            lowest = trend.loc[trend["Total_Amount"].idxmin()]
-
-            st.markdown("#### Trend Highlights")
-            c1, c2, c3 = st.columns(3, gap="small")
-
-            c1.metric(
-                f"Average {trend_mode} Amount",
-                format_compact_inr(trend["Total_Amount"].mean()),
-            )
-            c2.metric(
-                f"Highest-Sales {'Day' if trend_mode == 'Daily' else 'Month'}",
-                pd.Timestamp(highest["Period"]).strftime(period_format),
-                help=(
-                    "Recorded amount: "
-                    + format_compact_inr(highest["Total_Amount"])
-                ),
-            )
-            c3.metric(
-                f"Lowest-Sales {'Day' if trend_mode == 'Daily' else 'Month'}",
-                pd.Timestamp(lowest["Period"]).strftime(period_format),
-                help=(
-                    "Recorded amount: "
-                    + format_compact_inr(lowest["Total_Amount"])
-                ),
-            )
-
-            fig = px.line(
-                trend,
-                x="Period",
-                y=["Total_Amount", "Moving_Average"],
-                color_discrete_map={
-                    "Total_Amount": LIGHT_INDIGO,
-                    "Moving_Average": TEAL,
-                },
-                labels={
-                    "Period": "Order Date",
-                    "value": "Recorded Order Amount (₹)",
-                    "variable": "Series",
-                },
-            )
-
-            fig.update_traces(
-                selector=dict(name="Total_Amount"),
-                name=f"{trend_mode} Recorded Amount",
-                line=dict(color=LIGHT_INDIGO, width=2),
-                hovertemplate=(
-                    "Period: %{x|%d %b %Y}"
-                    "<br>Recorded amount: ₹%{y:,.2f}"
-                    "<extra></extra>"
-                ),
-            )
-            fig.update_traces(
-                selector=dict(name="Moving_Average"),
-                name=moving_label,
-                line=dict(color=TEAL, width=3.5),
-                hovertemplate=(
-                    "Period: %{x|%d %b %Y}"
-                    "<br>Moving average: ₹%{y:,.2f}"
-                    "<extra></extra>"
-                ),
-            )
-
-            fig.update_layout(
-                hovermode="x unified",
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="center",
-                    x=0.5,
-                ),
-            )
-            fig.update_yaxes(
-                title="Recorded Order Amount (₹)",
-                tickformat="~s",
-            )
-            fig.update_xaxes(
-                title="Order Date",
-                nticks=9,
-                tickformat=date_format,
-            )
-
-            style_chart(fig, height=400)
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                key="sales_analysis_trend_chart",
-            )
-            st.caption(
-                f"The lighter line shows the {trend_mode.lower()} "
-                f"recorded amount. The teal line shows the "
-                f"{moving_label.lower()}."
-            )
-        else:
-            st.info("No valid order dates are available.")
-
-    st.divider()
-
-    # ==================================================
-    # 8. AMOUNT BY PRODUCT CATEGORY
-    # ==================================================
-    left, right = st.columns(2, gap="large")
-
-    with left:
-        st.markdown("### Amount by Product Category")
-
-        if "Category" in df.columns:
-            order_count_column = (
-                "Order_ID" if "Order_ID" in df.columns
-                else "Total_Amount"
-            )
-
-            category_data = (
-                df.groupby("Category", dropna=False)
-                .agg(
-                    Total_Amount=("Total_Amount", "sum"),
-                    Orders=(order_count_column, "count"),
-                )
-                .reset_index()
-            )
-
-            category_data["Category"] = (
-                category_data["Category"].fillna("Unknown").astype(str)
-            )
-            category_data = category_data.sort_values(
-                "Total_Amount", ascending=True
-            )
-
-            if not category_data.empty:
-                top_category = category_data.loc[
-                    category_data["Total_Amount"].idxmax(), "Category"
-                ]
-
-                category_data["Bar_Color"] = category_data["Category"].apply(
-                    lambda category: (
-                        "Leading category"
-                        if category == top_category
-                        else "Other categories"
-                    )
-                )
-                category_data["Sales_Cr"] = (
-                    category_data["Total_Amount"] / 1e7
-                )
-
-                fig = px.bar(
-                    category_data,
-                    x="Sales_Cr",
-                    y="Category",
-                    orientation="h",
-                    color="Bar_Color",
-                    color_discrete_map={
-                        "Leading category": TEAL,
-                        "Other categories": LIGHT_INDIGO,
-                    },
-                    custom_data=["Total_Amount", "Orders"],
-                    labels={
-                        "Sales_Cr": "Recorded Order Amount (₹ Cr)",
-                        "Category": "",
-                        "Bar_Color": "",
-                    },
-                )
-
-                fig.update_traces(
-                    texttemplate="₹%{x:.2f} Cr",
-                    textposition="outside",
-                    cliponaxis=False,
-                    hovertemplate=(
-                        "<b>%{y}</b>"
-                        "<br>Recorded amount: ₹%{customdata[0]:,.2f}"
-                        "<br>Orders: %{customdata[1]:,}"
-                        "<extra></extra>"
-                    ),
-                )
-
-                max_sales = max(category_data["Sales_Cr"].max(), 0)
-                fig.update_layout(
-                    showlegend=False,
-                    margin=dict(l=15, r=95, t=25, b=50),
-                )
-                fig.update_xaxes(
-                    title="Recorded Order Amount (₹ Cr)",
-                    range=[
-                        0,
-                        max_sales * 1.25 if max_sales > 0 else 1,
-                    ],
-                )
-                fig.update_yaxes(
-                    title="",
-                    categoryorder="total ascending",
-                )
-
-                style_chart(fig, height=400)
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True,
-                    key="sales_analysis_category_chart",
-                )
-                st.caption(
-                    f"Teal highlights {top_category}, the category with "
-                    "the highest recorded amount. Amounts are not profit."
-                )
-
-    # ==================================================
-    # 9. PAYMENT MODE
-    # ==================================================
-    with right:
-        st.markdown("### Payment Mode")
-
-        if "Payment_Mode" in df.columns:
-            payment_data = (
-                df["Payment_Mode"]
-                .fillna("Unknown")
-                .astype(str)
-                .value_counts()
-                .rename_axis("Payment Mode")
-                .reset_index(name="Orders")
-            )
-
-            if not payment_data.empty:
-                fig = px.pie(
-                    payment_data,
-                    names="Payment Mode",
-                    values="Orders",
-                    hole=0.62,
-                    color="Payment Mode",
-                    color_discrete_sequence=CHART_COLORS,
-                )
-
-                total_payment_orders = int(payment_data["Orders"].sum())
-                fig.update_traces(
-                    textposition="inside",
-                    textinfo="percent",
-                    textfont=dict(color="#FFFFFF", size=12),
-                    hovertemplate=(
-                        "Payment mode: %{label}"
-                        "<br>Orders: %{value:,}"
-                        "<br>Share: %{percent}"
-                        "<extra></extra>"
-                    ),
-                )
-                fig.update_layout(
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="center",
-                        x=0.5,
-                        font=dict(size=10, color=NAVY),
-                    ),
-                    margin=dict(l=10, r=10, t=65, b=15),
-                    annotations=[
-                        dict(
-                            text=(
-                                f"<b>{total_payment_orders:,}</b>"
-                                "<br><span style='font-size:12px'>Orders</span>"
-                            ),
-                            x=0.5,
-                            y=0.5,
-                            showarrow=False,
-                            font=dict(size=19, color=NAVY),
-                        )
-                    ],
-                )
-
-                style_chart(fig, height=400)
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True,
-                    key="sales_analysis_payment_chart",
-                )
-                st.caption(
-                    "Payment-mode percentages represent order counts, "
-                    "not payment amount."
-                )
-
-    st.divider()
-
-    # ==================================================
-    # 10. ORDER STATUS BREAKDOWN
-    # ==================================================
-    st.markdown("### Order Status Breakdown")
-
-    status_data = (
-        df["Order_Status"]
-        .value_counts()
-        .rename_axis("Order Status")
-        .reset_index(name="Orders")
-    )
-
-    status_colors = {
-        "Delivered": TEAL,
-        "Processing": BLUE,
-        "Shipped": INDIGO,
-        "Cancelled": AMBER,
-        "Returned": CORAL,
-        "Unknown": SLATE,
+def scope_stats(d):
+    n = len(d)
+    total = float(d["Total_Amount"].sum())
+    return {
+        "sales": total,
+        "orders": n,
+        "mean": total / n if n else 0.0,
+        "median": float(d["Total_Amount"].median()) if n else 0.0,
     }
 
-    if not status_data.empty:
-        status_data["Share"] = (
-            status_data["Orders"] / status_data["Orders"].sum() * 100
+
+def weekly_scope_series(d):
+    """Weekly sales, orders, mean and median order for the KPI sparklines."""
+    amounts = d.dropna(subset=["Order_Date"]).set_index("Order_Date")["Total_Amount"]
+    grouped = amounts.resample(**WEEK_RULE)
+    weekly = pd.DataFrame({
+        "sales": grouped.sum(),
+        "orders": grouped.size(),
+        "mean": grouped.mean(),
+        "median": grouped.median(),
+    })
+    if len(weekly) >= 6:                      # drop partial weeks at both ends
+        weekly = weekly.iloc[1:-1]
+    return weekly
+
+
+def top_decile_share(d):
+    """Share of total amount that comes from the largest 10% of orders."""
+    amounts = np.sort(d["Total_Amount"].to_numpy())[::-1]
+    total = amounts.sum()
+    if len(amounts) == 0 or total <= 0:
+        return 0.0
+    k = max(1, int(np.ceil(len(amounts) * 0.10)))
+    return float(amounts[:k].sum() / total * 100)
+
+
+def ranked_rows(grouped_amount, grouped_orders, limit):
+    """Rows for ui.ranked_bars from per-group amount and order count."""
+    order = grouped_amount.sort_values(ascending=False)
+    total = float(grouped_amount.sum())
+    top = order.iloc[0] if len(order) else 0
+    rows = []
+    for name in order.index[:limit]:
+        amount = float(grouped_amount[name])
+        orders = int(grouped_orders[name])
+        rows.append((
+            str(name),
+            ui.format_crore(amount),
+            amount / total * 100 if total else 0.0,
+            amount / top * 100 if top else 0.0,
+            ui.format_compact_inr(amount / orders) if orders else "–",
+        ))
+    return rows
+
+
+# ==================================================
+# 2. HEADER AND KPI CARDS
+# ==================================================
+def scope_picker():
+    choice = st.segmented_control(
+        "Order scope",
+        SCOPES,
+        default="Delivered",
+        key="sa_scope",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    return choice or "Delivered"
+
+
+def render_header(scope, stats, decile):
+    amount_text = ui.format_crore(stats["sales"])
+    if scope == "Delivered":
+        lead = f"Delivered sales of {amount_text} from {stats['orders']:,} orders."
+    else:
+        lead = (
+            f"Order value of {amount_text} across all {stats['orders']:,} orders, "
+            "including cancelled, returned and unfinished ones."
         )
+    lead += (
+        f" The typical order is {ui.format_compact_inr(stats['median'])}, "
+        f"but the largest 10% of orders bring in {decile:.0f}% of the total."
+    )
+    st.markdown(ui.page_header("Sales analysis", lead), unsafe_allow_html=True)
 
-        fig = px.bar(
-            status_data,
-            x="Order Status",
-            y="Orders",
-            color="Order Status",
-            color_discrete_map=status_colors,
-            text="Orders",
-            custom_data=["Share"],
-            labels={"Orders": "Number of Orders"},
-        )
-        fig.update_traces(
-            texttemplate="%{text:,}",
-            textposition="outside",
-            cliponaxis=False,
-            hovertemplate=(
-                "Status: %{x}"
-                "<br>Orders: %{y:,}"
-                "<br>Share: %{customdata[0]:.2f}%"
-                "<extra></extra>"
-            ),
-        )
-        fig.update_layout(
-            showlegend=False,
-            margin=dict(l=20, r=25, t=25, b=40),
-        )
-        fig.update_yaxes(title="Number of Orders")
 
-        style_chart(fig, height=350)
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            key="sales_analysis_status_chart",
-        )
+def render_kpis(scope, current, previous, n_days, weekly):
+    sales_label = "Delivered sales" if scope == "Delivered" else "Order value"
+    period_text = period_label(n_days) if previous else "Weekly trend"
 
-    st.divider()
+    cards = [
+        (sales_label, ui.format_crore(current["sales"]), "sales",
+         "Sum of Total_Amount for the orders in scope."),
+        ("Orders", f"{current['orders']:,}", "orders",
+         "Number of orders in scope."),
+        ("Average order", f"₹{current['mean']:,.0f}", "mean",
+         "Total amount divided by orders. Pulled up by a few very large orders."),
+        ("Median order", f"₹{current['median']:,.0f}", "median",
+         "Half of all orders are smaller than this."),
+    ]
 
-    # ==================================================
-    # 11. DYNAMIC STATE AMOUNT CHART
-    # ==================================================
-    if "State" in df.columns:
-        displayed_states = sorted(
-            df["State"].dropna().astype(str).unique().tolist()
-        )
-
-        if len(displayed_states) == 1:
-            chart_title = (
-                f"Recorded Order Amount — {displayed_states[0]}"
-            )
-        elif not displayed_states:
-            chart_title = "Recorded Order Amount by State"
-        else:
-            chart_title = "Recorded Order Amount by Selected States"
-
-        st.markdown(f"### {chart_title}")
-
-        order_count_column = (
-            "Order_ID" if "Order_ID" in df.columns
-            else "Total_Amount"
-        )
-
-        state_data = (
-            df.groupby("State", dropna=False)
-            .agg(
-                Total_Amount=("Total_Amount", "sum"),
-                Orders=(order_count_column, "count"),
-            )
-            .reset_index()
-        )
-
-        state_data["State"] = (
-            state_data["State"].fillna("Unknown").astype(str)
-        )
-        state_data = state_data.sort_values(
-            "Total_Amount", ascending=True
-        )
-
-        if not state_data.empty:
-            state_data["Amount_Cr"] = (
-                state_data["Total_Amount"] / 1e7
-            )
-            max_state_amount = max(state_data["Amount_Cr"].max(), 0)
-
-            fig = px.bar(
-                state_data,
-                x="Amount_Cr",
-                y="State",
-                orientation="h",
-                color_discrete_sequence=[TEAL],
-                custom_data=["Total_Amount", "Orders"],
-                labels={
-                    "Amount_Cr": "Recorded Order Amount (₹ Cr)",
-                    "State": "",
-                },
-            )
-            fig.update_traces(
-                texttemplate="₹%{x:.2f} Cr",
-                textposition="outside",
-                cliponaxis=False,
-                hovertemplate=(
-                    "<b>%{y}</b>"
-                    "<br>Recorded amount: ₹%{customdata[0]:,.2f}"
-                    "<br>Orders: %{customdata[1]:,}"
-                    "<extra></extra>"
+    for column, (label, value, key, help_text) in zip(st.columns(4, gap="medium"), cards):
+        delta_text, tone = (None, "flat")
+        if previous:
+            delta_text, tone = ui.change_chip(current[key], previous[key])
+        with column:
+            st.markdown(
+                ui.kpi_card(
+                    label, value, delta_text=delta_text, tone=tone,
+                    context=period_text, spark=weekly[key], help=help_text,
                 ),
-            )
-            fig.update_layout(
-                showlegend=False,
-                margin=dict(l=20, r=100, t=25, b=50),
-            )
-            fig.update_xaxes(
-                title="Recorded Order Amount (₹ Cr)",
-                range=[
-                    0,
-                    max_state_amount * 1.25
-                    if max_state_amount > 0 else 1,
-                ],
-            )
-            fig.update_yaxes(
-                title="",
-                categoryorder="total ascending",
+                unsafe_allow_html=True,
             )
 
-            chart_height = max(
-                350,
-                min(800, 45 * len(state_data) + 100),
+
+# ==================================================
+# 3. WHAT SELLS
+# ==================================================
+def render_categories(d, scope):
+    amount_header = "Sales" if scope == "Delivered" else "Value"
+    with st.container(key="sv_panel_sa_category"):
+        st.markdown(
+            ui.panel_title("Sales by category", "Share of the total, with the average order size"),
+            unsafe_allow_html=True,
+        )
+        if "Category" not in d.columns or d.empty:
+            st.info("No category data for this selection.")
+            return
+
+        grouped = d.groupby("Category")["Total_Amount"].agg(["sum", "size"])
+        rows = ranked_rows(grouped["sum"], grouped["size"], limit=8)
+        st.markdown(
+            ui.ranked_bars(rows, headers=(amount_header, "Share", "Avg order")),
+            unsafe_allow_html=True,
+        )
+
+
+def render_top_items(d, products, scope):
+    with st.container(key="sv_panel_sa_top"):
+        title_col, picker_col = st.columns([1, 1], vertical_alignment="center")
+        with picker_col:
+            mode = st.segmented_control(
+                "Rank by", ["Products", "Brands"], default="Products",
+                key="sa_top_mode", label_visibility="collapsed", width="stretch",
+            ) or "Products"
+        with title_col:
+            st.markdown(
+                ui.panel_title(f"Top {mode.lower()}", "Highest sales in this selection"),
+                unsafe_allow_html=True,
             )
-            style_chart(fig, height=chart_height)
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                key="sales_analysis_state_chart",
+
+        needed = {"Product_ID", "Product_Name", "Brand"}
+        if "Product_ID" not in d.columns or products is None or not needed.issubset(products.columns):
+            st.info("Product details are not available.")
+            return
+        if d.empty:
+            st.info("No orders for this selection.")
+            return
+
+        info = products.drop_duplicates("Product_ID").set_index("Product_ID")
+        label_column = "Product_Name" if mode == "Products" else "Brand"
+
+        per_product = d.groupby("Product_ID")["Total_Amount"].agg(["sum", "size"])
+        labels = per_product.index.map(info[label_column])
+        grouped = (
+            pd.DataFrame(
+                {"sum": per_product["sum"].to_numpy(), "size": per_product["size"].to_numpy()},
+                index=labels,
             )
-            st.caption(
-                f"Showing {len(state_data)} state(s) represented in the "
-                "filtered data. Amounts are recorded Total Amount, not profit."
+            .groupby(level=0).sum()
+        )
+        if grouped.empty:
+            st.info("No matching product details.")
+            return
+
+        rows = ranked_rows(grouped["sum"], grouped["size"], limit=7)
+        amount_header = "Sales" if scope == "Delivered" else "Value"
+        st.markdown(
+            ui.ranked_bars(rows, headers=(amount_header, "Share", "Avg order")),
+            unsafe_allow_html=True,
+        )
+
+
+# ==================================================
+# 4. ORDER SIZE AND PAYMENT
+# ==================================================
+def render_order_size(d, stats, decile):
+    with st.container(key="sv_panel_sa_size"):
+        st.markdown(
+            ui.panel_title("Order size", "How orders and sales are spread across order values"),
+            unsafe_allow_html=True,
+        )
+        if d.empty or stats["sales"] <= 0:
+            st.info("No orders for this selection.")
+            return
+
+        edges = [low for low, _, _ in SIZE_BANDS] + [np.inf]
+        labels = [label for _, _, label in SIZE_BANDS]
+        bands = pd.cut(d["Total_Amount"], bins=edges, labels=labels, right=False)
+
+        orders_share = bands.value_counts(normalize=True).reindex(labels).fillna(0) * 100
+        sales_share = (
+            d.groupby(bands, observed=False)["Total_Amount"].sum()
+            .reindex(labels).fillna(0) / stats["sales"] * 100
+        )
+
+        rows = [(label, float(orders_share[label]), float(sales_share[label])) for label in labels]
+        st.markdown(ui.paired_bars(rows), unsafe_allow_html=True)
+        st.markdown(
+            ui.insight_note(
+                f"The largest 10% of orders account for {decile:.0f}% of sales. "
+                f"The median order is {ui.format_compact_inr(stats['median'])} "
+                f"against an average of {ui.format_compact_inr(stats['mean'])}.",
+            ),
+            unsafe_allow_html=True,
+        )
+
+
+def render_payment(d):
+    with st.container(key="sv_panel_sa_payment"):
+        st.markdown(
+            ui.panel_title("How customers pay", "Share of orders against share of sales"),
+            unsafe_allow_html=True,
+        )
+        if "Payment_Mode" not in d.columns or d.empty:
+            st.info("No payment data for this selection.")
+            return
+
+        grouped = d.groupby("Payment_Mode")["Total_Amount"].agg(["size", "sum"])
+        grouped = grouped.sort_values("size", ascending=False)
+        orders_share = grouped["size"] / grouped["size"].sum() * 100
+        sales_share = grouped["sum"] / grouped["sum"].sum() * 100 if grouped["sum"].sum() > 0 else grouped["sum"] * 0
+
+        rows = [(mode, float(orders_share[mode]), float(sales_share[mode])) for mode in grouped.index]
+        st.markdown(ui.paired_bars(rows), unsafe_allow_html=True)
+
+        if {"Coupon_Discount", "Order_Value"}.issubset(d.columns):
+            used = (d["Coupon_Discount"] > 0).mean() * 100
+            order_value = d["Order_Value"].sum()
+            cost = d["Coupon_Discount"].sum() / order_value * 100 if order_value > 0 else 0.0
+            st.markdown(
+                ui.stat_row([
+                    ("Orders with a coupon", f"{used:.1f}%", "of orders in scope"),
+                    ("Coupon cost", f"{cost:.1f}%", "of order value"),
+                ]),
+                unsafe_allow_html=True,
             )
 
-    st.divider()
 
-    
-    # ==================================================
-    # 12. DETAILED SALES DATA TABLE
-    # ==================================================
+# ==================================================
+# 5. STATES AND FULFILMENT
+# ==================================================
+def render_states(d, scope):
+    amount_header = "Sales" if scope == "Delivered" else "Value"
+    with st.container(key="sv_panel_sa_states"):
+        st.markdown(
+            ui.panel_title("Sales by state", "States in the current filter"),
+            unsafe_allow_html=True,
+        )
+        if "State" not in d.columns or d.empty:
+            st.info("No state data for this selection.")
+            return
 
-    with st.expander(
-        "📋 View sales data used in this analysis",
-        expanded=False,
-    ):
-        # Select only columns available in the filtered sales data.
-        display_columns = [
-            column
-            for column in [
-                "Order_ID",
-                "Order_Date",
-                "State",
-                "Category",
-                "Payment_Mode",
-                "Order_Status",
-                "Total_Amount",
-            ]
-            if column in df.columns
-        ]
+        grouped = d.groupby("State")["Total_Amount"].agg(["sum", "size"])
+        rows = ranked_rows(grouped["sum"], grouped["size"], limit=10)
+        st.markdown(
+            ui.ranked_bars(rows, headers=(amount_header, "Share", "Avg order")),
+            unsafe_allow_html=True,
+        )
+        if len(grouped) > 10:
+            rest = grouped["sum"].sort_values(ascending=False).iloc[10:].sum() / grouped["sum"].sum() * 100
+            st.caption(f"The other {len(grouped) - 10} states together make up {rest:.1f}%.")
 
-        if not display_columns:
-            st.info("No columns are available to display.")
+
+def outcome_note(df):
+    """Plain-language check of whether any state stands out on returns/cancellations."""
+    if "State" not in df.columns or df["State"].nunique() < 2:
+        return None
+
+    flagged = df["Order_Status"].isin(["returned", "cancelled"])
+    by_state = flagged.groupby(df["State"]).agg(["mean", "size"])
+    by_state = by_state[by_state["size"] >= 100]
+    if len(by_state) < 2:
+        return None
+
+    rate = by_state["mean"] * 100
+    low_state, high_state = rate.idxmin(), rate.idxmax()
+    low, high = float(rate.min()), float(rate.max())
+    text = (
+        f"Returned or cancelled orders range from {low:.1f}% ({low_state}) "
+        f"to {high:.1f}% ({high_state}) across states"
+    )
+    text += (
+        ", so no state stands out." if high - low < 1.5
+        else f". {high_state} is the highest."
+    )
+    return text
+
+
+def render_fulfilment(df):
+    """Delivery time (delivered orders) and an outcome check (all orders)."""
+    with st.container(key="sv_panel_sa_delivery"):
+        st.markdown(
+            ui.panel_title("Delivery time", "Days from order to delivery, delivered orders"),
+            unsafe_allow_html=True,
+        )
+
+        delivered = df[df["Order_Status"].eq("delivered")]
+        if "Delivery_Date" not in delivered.columns or delivered.empty:
+            st.info("Delivery dates are not available for this selection.")
         else:
-            display_df = df[display_columns].copy()
-
-            # Format order dates for display.
-            if "Order_Date" in display_df.columns:
-                display_df["Order_Date"] = (
-                    pd.to_datetime(
-                        display_df["Order_Date"],
-                        errors="coerce",
-                    ).dt.strftime("%d %b %Y")
-                )
-
-            # Friendly column headers.
-            column_config = {}
-
-            if "Order_ID" in display_df.columns:
-                column_config["Order_ID"] = (
-                    st.column_config.TextColumn("Order ID")
-                )
-
-            if "Order_Date" in display_df.columns:
-                column_config["Order_Date"] = (
-                    st.column_config.TextColumn("Order Date")
-                )
-
-            if "State" in display_df.columns:
-                column_config["State"] = (
-                    st.column_config.TextColumn("State")
-                )
-
-            if "Category" in display_df.columns:
-                column_config["Category"] = (
-                    st.column_config.TextColumn("Product Category")
-                )
-
-            if "Payment_Mode" in display_df.columns:
-                column_config["Payment_Mode"] = (
-                    st.column_config.TextColumn("Payment Mode")
-                )
-
-            if "Order_Status" in display_df.columns:
-                column_config["Order_Status"] = (
-                    st.column_config.TextColumn("Order Status")
-                )
-
-            if "Total_Amount" in display_df.columns:
-                column_config["Total_Amount"] = (
-                    st.column_config.NumberColumn(
-                        "Recorded Amount (₹)",
-                        format="₹%.2f",
-                    )
-                )
-
-            # Limit displayed rows to keep the dashboard responsive.
-            max_rows = 5000
-            rows_to_display = display_df.head(max_rows)
-
-            st.dataframe(
-                rows_to_display,
-                column_config=column_config,
-                use_container_width=True,
-                hide_index=True,
-                height=400,
-            )
-
-            # Explain the row limit and amount definition.
-            if len(display_df) > max_rows:
-                st.caption(
-                    f"Showing the first {max_rows:,} of "
-                    f"{len(display_df):,} filtered records. "
-                    "Amounts represent recorded Total Amount, "
-                    "not profit or verified accounting revenue."
-                )
+            days = (delivered["Delivery_Date"] - delivered["Order_Date"]).dt.days.dropna()
+            days = days[days >= 0].astype(int)
+            if days.empty:
+                st.info("Delivery dates are not available for this selection.")
             else:
-                st.caption(
-                    f"Displaying {len(display_df):,} filtered records. "
-                    "Amounts represent recorded Total Amount, "
-                    "not profit or verified accounting revenue."
+                counts = days.value_counts().sort_index()
+                top = counts.max()
+                rows = [
+                    (f"{day} day{'s' if day != 1 else ''}", f"{count:,}",
+                     count / len(days) * 100, count / top * 100)
+                    for day, count in counts.items()
+                ]
+                peak = int(np.argmax(counts.to_numpy()))
+                st.markdown(
+                    ui.ranked_bars(rows, highlight=peak, headers=("Orders", "Share")),
+                    unsafe_allow_html=True,
+                )
+                within = (days <= 5).mean() * 100
+                st.markdown(
+                    ui.stat_row([
+                        ("Average", f"{days.mean():.1f} days", ""),
+                        ("Delivered within 5 days", f"{within:.0f}%", "of delivered orders"),
+                    ]),
+                    unsafe_allow_html=True,
                 )
 
+        note = outcome_note(df)
+        if note:
+            st.markdown(ui.insight_note(note), unsafe_allow_html=True)
+
+
+# ==================================================
+# 6. DETAIL TABLE
+# ==================================================
+def render_table(d):
+    with st.expander("View the orders behind these numbers", expanded=False):
+        columns = [
+            c for c in ["Order_ID", "Order_Date", "State", "Category",
+                        "Payment_Mode", "Order_Status", "Total_Amount"]
+            if c in d.columns
+        ]
+        if not columns:
+            st.info("No columns are available to display.")
+            return
+
+        max_rows = 5000
+        shown = d[columns].head(max_rows).copy()
+        shown["Order_Status"] = shown["Order_Status"].str.title()
+
+        config = {
+            "Order_ID": st.column_config.TextColumn("Order ID"),
+            "Order_Date": st.column_config.DateColumn("Order date", format="DD MMM YYYY"),
+            "State": st.column_config.TextColumn("State"),
+            "Category": st.column_config.TextColumn("Category"),
+            "Payment_Mode": st.column_config.TextColumn("Payment"),
+            "Order_Status": st.column_config.TextColumn("Status"),
+            "Total_Amount": st.column_config.NumberColumn("Amount (₹)", format="₹%.2f"),
+        }
+        st.dataframe(
+            shown,
+            column_config={k: v for k, v in config.items() if k in shown.columns},
+            hide_index=True,
+            height=380,
+            width="stretch",
+        )
+        if len(d) > max_rows:
+            st.caption(f"Showing the first {max_rows:,} of {len(d):,} orders in scope.")
+        else:
+            st.caption(f"Showing all {len(d):,} orders in scope.")
+
+
+# ==================================================
+# 7. MAIN ENTRY POINT
+# ==================================================
+def render(sales, customers, products, context=None):
+    """
+    Render the Sales Analysis page.
+
+    `context` lets the KPI cards compare with the previous period:
+        {"full_sales": sales, "start": start_date, "end": end_date, "states": selected_states}
+    """
+    if sales.empty:
+        st.warning("No sales records match the selected date and state filters.")
+        return
+    if not {"Order_Status", "Total_Amount"}.issubset(sales.columns):
+        st.error("The sales data must contain Order_Status and Total_Amount.")
+        return
+
+    df = prepare_sales(sales, extra=EXTRA_COLUMNS)
+
+    head_col, pick_col = st.columns([3, 2], vertical_alignment="bottom")
+    with pick_col:
+        scope = scope_picker()
+
+    d = apply_scope(df, scope)
+    stats = scope_stats(d)
+    decile = top_decile_share(d)
+
+    with head_col:
+        if d.empty:
+            st.markdown(ui.page_header("Sales analysis", "No orders match this scope."), unsafe_allow_html=True)
+        else:
+            render_header(scope, stats, decile)
+
+    if d.empty:
+        st.info("There are no orders in the selected scope. Try All orders or widen the filters.")
+        return
+
+    # KPI cards with change versus the previous period
+    previous_stats, n_days = None, 0
+    previous = previous_period_slice(context)
+    if previous:
+        raw_rows, n_days = previous
+        previous_d = apply_scope(prepare_sales(raw_rows, extra=EXTRA_COLUMNS), scope)
+        if not previous_d.empty:
+            previous_stats = scope_stats(previous_d)
+    render_kpis(scope, stats, previous_stats, n_days, weekly_scope_series(d))
+
+    # What sells
+    left, right = st.columns(2, gap="medium")
+    with left:
+        render_categories(d, scope)
+    with right:
+        render_top_items(d, products, scope)
+
+    # Order size and payment
+    left, right = st.columns(2, gap="medium")
+    with left:
+        render_order_size(d, stats, decile)
+    with right:
+        render_payment(d)
+
+    # States and fulfilment
+    left, right = st.columns(2, gap="medium")
+    with left:
+        render_states(d, scope)
+    with right:
+        render_fulfilment(df)
+
+    render_table(d)
+
+    scope_note = (
+        "Delivered orders only." if scope == "Delivered"
+        else "All orders, including cancelled, returned and unfinished ones."
+    )
+    st.caption(
+        f"{scope_note} Amounts are recorded Total Amount (order value minus coupon plus shipping), "
+        "not profit or audited revenue. Delivery time and the outcome check use their own order sets, "
+        "as stated in each panel."
+    )

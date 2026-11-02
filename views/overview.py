@@ -1,827 +1,439 @@
+"""
+Overview page.
 
+Layout:
+    header (title + one-sentence insight)
+    4 KPI cards (value, change vs previous period, weekly sparkline)
+    sales trend (daily / weekly / monthly)   |  order outcomes
+    sales by category                        |  top states
+"""
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
+from utils import ui
+from utils.analytics import (
+    WEEK_RULE,
+    period_label,
+    prepare_sales,
+    previous_period_summary,
+    summarize,
+    weekly_series,
+)
+
+STATUS_ORDER = ["delivered", "shipped", "processing", "returned", "cancelled"]
+STATUS_COLORS = {
+    "delivered": ui.INDIGO,
+    "shipped": ui.TEAL,
+    "processing": ui.BLUE,
+    "returned": ui.CORAL,
+    "cancelled": ui.AMBER,
+}
+
 
 # ==================================================
-# 1. SALESVISION THEME
+# 1. DATA PREPARATION
 # ==================================================
-NAVY = "#172554"
-INDIGO = "#4F46E5"
-TEAL = "#0F9FA8"
-LIGHT_INDIGO = "#A5B4FC"
-CORAL = "#F97373"
-AMBER = "#F59E0B"
-BLUE = "#0EA5E9"
-
-CHART_COLORS = [
-    INDIGO, TEAL, BLUE, AMBER, CORAL, "#8B5CF6", "#14B8A6"
-]
-
-
-# ==================================================
-# 2. PAGE-SPECIFIC CSS
-# ==================================================
-def apply_overview_styles():
-    """Style KPI values so they remain visible in narrow columns."""
-
-    st.markdown(
-        """
-        <style>
-        /* Keep KPI labels readable */
-        div[data-testid="stMetricLabel"] {
-            font-size: 13px !important;
-            line-height: 1.4 !important;
-            white-space: normal !important;
-            overflow-wrap: anywhere !important;
-        }
-
-        /* Prevent metric values from being clipped */
-        div[data-testid="stMetricValue"] {
-            font-size: clamp(18px, 1.6vw, 28px) !important;
-            line-height: 1.3 !important;
-            white-space: normal !important;
-            overflow: visible !important;
-            overflow-wrap: anywhere !important;
-            word-break: normal !important;
-        }
-
-        div[data-testid="stMetric"] {
-            min-width: 0 !important;
-            height: 100%;
-            padding: 16px !important;
-            box-sizing: border-box !important;
-        }
-
-        /* Consistent chart panels */
-        div[data-testid="stPlotlyChart"] {
-            background: #FFFFFF;
-            border: 1px solid #E2E8F0;
-            border-radius: 14px;
-            padding: 8px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
+def build_trend(delivered, mode, start, end):
+    """Aggregate delivered amounts per day / week / month over [start, end]."""
+    days = pd.date_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize(), freq="D")
+    daily = (
+        delivered.assign(Day=delivered["Order_Date"].dt.normalize())
+        .groupby("Day")["Total_Amount"].sum()
+        .reindex(days, fill_value=0.0)
     )
 
+    if mode == "Daily":
+        amounts, window = daily, 7
+        partial = pd.Series(False, index=amounts.index)
+        ma_label = "7-day moving average"
+    elif mode == "Weekly":
+        amounts, window = daily.resample(**WEEK_RULE).sum(), 4
+        partial = (amounts.index < days[0]) | (amounts.index + pd.Timedelta(days=6) > days[-1])
+        partial = pd.Series(partial, index=amounts.index)
+        ma_label = "4-week moving average"
+    else:
+        amounts, window = daily.resample("MS").sum(), 3
+        month_end = amounts.index + pd.offsets.MonthEnd(0)
+        partial = pd.Series((amounts.index < days[0]) | (month_end > days[-1]), index=amounts.index)
+        ma_label = "3-month moving average"
+
+    trend = pd.DataFrame({"Period": amounts.index, "Amount": amounts.values, "Partial": partial.values})
+    complete = trend["Amount"].where(~trend["Partial"])
+    trend["Average"] = complete.rolling(window, min_periods=1).mean()
+    return trend, ma_label
+
 
 # ==================================================
-# 3. CHART STYLING
+# 2. PAGE HEADER
 # ==================================================
-def style_chart(fig, height=380):
-    """Apply the shared SalesVision chart appearance."""
+def render_header(df, delivered, start, end):
+    n_states = df["State"].nunique() if "State" in df.columns else None
+    scope = f"{ui.format_date(start)} to {ui.format_date(end)}"
+    if n_states:
+        scope += f" across {n_states} state{'s' if n_states != 1 else ''}"
 
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
-        font=dict(
-            family="Arial, sans-serif",
-            color=NAVY,
-            size=12,
-        ),
-        margin=dict(l=20, r=25, t=65, b=35),
-        height=height,
-        hoverlabel=dict(
-            bgcolor=NAVY,
-            font_color="#FFFFFF",
-            font_size=12,
-        ),
-        legend=dict(
-            title_text="",
-            font=dict(color=NAVY, size=11),
-            bgcolor="rgba(255,255,255,0)",
-        ),
+    lead = f"Delivered sales for {scope}."
+
+    if "Category" in delivered.columns and not delivered.empty:
+        by_cat = delivered.groupby("Category")["Total_Amount"].sum()
+        total = by_cat.sum()
+        if total > 0:
+            lead += f" {by_cat.idxmax()} drives {by_cat.max() / total * 100:.0f}% of it."
+
+    st.markdown(ui.page_header("Business overview", lead), unsafe_allow_html=True)
+
+
+# ==================================================
+# 3. KPI CARDS
+# ==================================================
+def render_kpis(df, context):
+    current = summarize(df)
+    previous = previous_period_summary(context)
+    weekly = weekly_series(df)
+
+    if previous:
+        prev_summary, n_days = previous
+        period_text = period_label(n_days)
+    else:
+        prev_summary, period_text = None, "Weekly trend"
+
+    def chip(key, kind="pct", good_when="up"):
+        if prev_summary is None:
+            return None, "flat"
+        return ui.change_chip(current[key], prev_summary[key], kind=kind, good_when=good_when)
+
+    cards = [
+        dict(label="Delivered sales", value=ui.format_crore(current["sales"]),
+             chip=chip("sales"), spark=weekly["sales"], color=ui.INDIGO,
+             help="Recorded Total_Amount of delivered orders."),
+        dict(label="Total orders", value=f"{current['orders']:,}",
+             chip=chip("orders"), spark=weekly["orders"], color=ui.INDIGO,
+             help="All orders that match the current filters."),
+        dict(label="Average order value", value=f"₹{current['aov']:,.0f}",
+             chip=chip("aov"), spark=weekly["aov"], color=ui.INDIGO,
+             help="Delivered sales divided by delivered orders."),
+        dict(label="Return rate", value=f"{current['return_rate']:.2f}%",
+             chip=chip("return_rate", kind="pp", good_when="down"),
+             spark=weekly["return_rate"], color=ui.CORAL,
+             help="Returned orders divided by all filtered orders."),
+    ]
+
+    for column, card in zip(st.columns(4, gap="medium"), cards):
+        delta_text, tone = card["chip"]
+        with column:
+            st.markdown(
+                ui.kpi_card(
+                    card["label"], card["value"],
+                    delta_text=delta_text, tone=tone, context=period_text,
+                    spark=card["spark"], color=card["color"], help=card["help"],
+                ),
+                unsafe_allow_html=True,
+            )
+
+
+# ==================================================
+# 4. SALES TREND
+# ==================================================
+def trend_options(days):
+    """Only offer granularities that give a meaningful chart for the range."""
+    if days < 14:
+        return ["Daily"]
+    if days < 60:
+        return ["Daily", "Weekly"]
+    return ["Daily", "Weekly", "Monthly"]
+
+
+def granularity_picker(days):
+    """Segmented control that always fits its column; returns the chosen mode."""
+    options = trend_options(days)
+    if len(options) == 1:                  # nothing to choose from
+        return options[0]
+
+    default = "Daily" if days <= 45 else "Weekly"
+    choice = st.segmented_control(
+        "Trend granularity",
+        options,
+        default=default,
+        # A different set of options gets its own widget, so an old selection
+        # (e.g. "Monthly") never survives into a range that cannot show it.
+        key=f"overview_trend_mode_{len(options)}",
+        label_visibility="collapsed",
+        width="stretch",
     )
+    return choice or default
 
-    fig.update_xaxes(
-        gridcolor="#E8EDF4",
-        linecolor="#CBD5E1",
-        tickfont=dict(color="#475569"),
-        title_font=dict(color=NAVY),
-        zeroline=False,
-    )
 
-    fig.update_yaxes(
-        gridcolor="#E8EDF4",
-        linecolor="#CBD5E1",
-        tickfont=dict(color="#475569"),
-        title_font=dict(color=NAVY),
-        zeroline=False,
-    )
+def trend_figure(trend, mode, ma_label, average):
+    maximum = float(trend["Amount"].max())
+    divisor, unit = (1e7, "Cr") if maximum >= 1e7 else (1e5, "lakh")
 
+    values = trend["Amount"] / divisor
+    averages = trend["Average"] / divisor
+    series_name = {"Daily": "Daily amount", "Weekly": "Weekly amount", "Monthly": "Monthly amount"}[mode]
+
+    fig = go.Figure()
+
+    # 1) the amounts: pale bars (or a pale line for daily) so the lines on top stay visible
+    if mode == "Daily":
+        fig.add_trace(go.Scatter(
+            x=trend["Period"], y=values, mode="lines", name=series_name,
+            line=dict(color=ui.LIGHT_INDIGO, width=1.5),
+            hovertemplate=f"₹%{{y:.2f}} {unit}<extra>{series_name}</extra>",
+        ))
+    else:
+        fills = ["#E0E7FF" if p else ui.LIGHT_INDIGO for p in trend["Partial"]]
+        outlines = [ui.LIGHT_INDIGO if p else "rgba(0,0,0,0)" for p in trend["Partial"]]
+        fig.add_trace(go.Bar(
+            x=trend["Period"], y=values, name=series_name,
+            marker=dict(color=fills, line=dict(color=outlines, width=1)),
+            hovertemplate=f"₹%{{y:.2f}} {unit}<extra>{series_name}</extra>",
+        ))
+
+    # 2) moving average
+    fig.add_trace(go.Scatter(
+        x=trend["Period"], y=averages, mode="lines", name=ma_label,
+        line=dict(color=ui.TEAL, width=3),
+        hovertemplate=f"₹%{{y:.2f}} {unit}<extra>{ma_label}</extra>",
+    ))
+
+    # 3) overall average: a dark dashed line drawn last (on top), with its value in the legend
+    fig.add_trace(go.Scatter(
+        x=[trend["Period"].min(), trend["Period"].max()],
+        y=[average / divisor] * 2,
+        mode="lines",
+        name=f"Average ₹{average / divisor:.2f} {unit}",
+        line=dict(color=ui.NAVY, width=2, dash="dash"),
+        hoverinfo="skip",
+    ))
+
+    ui.style_chart(fig, height=330)
+    fig.update_layout(bargap=0.25)
+    span_days = (trend["Period"].max() - trend["Period"].min()).days
+    if mode == "Monthly":
+        tick_format = "%b %y"
+    elif span_days <= 130:                 # short ranges: day + month, so labels never repeat
+        tick_format = "%d %b"
+    else:
+        tick_format = "%b %Y"
+    fig.update_xaxes(tickformat=tick_format, nticks=8)
+    fig.update_yaxes(title_text=f"₹ {unit}")
+    if mode != "Daily":
+        fig.update_yaxes(rangemode="tozero")
     return fig
 
 
-# ==================================================
-# 4. INR FORMATTING
-# ==================================================
-def format_inr(value):
-    """Format an amount in Indian rupees."""
+def trend_insight(pool, mode):
+    """One plain-language takeaway about how much the amount moves."""
+    if len(pool) < 4:
+        return None, ""
+    average = float(pool["Amount"].mean())
+    if average <= 0:
+        return None, ""
 
-    return f"₹{value:,.2f}"
+    low, high = float(pool["Amount"].min()), float(pool["Amount"].max())
+    spread = max(high - average, average - low) / average * 100
+    adjective, noun = {"Daily": ("Daily", "day"), "Weekly": ("Weekly", "week"), "Monthly": ("Monthly", "month")}[mode]
 
-
-def format_crore(value):
-    """Convert rupees to crore."""
-
-    return f"₹{value / 1e7:,.2f} Cr"
-
-
-def format_compact_inr(value):
-    """Compact INR values for dashboard KPI cards."""
-
-    value = float(value)
-
-    if abs(value) >= 1e7:
-        return f"₹{value / 1e7:.2f} Cr"
-
-    if abs(value) >= 1e5:
-        return f"₹{value / 1e5:.2f} lakh"
-
-    if abs(value) >= 1e3:
-        return f"₹{value / 1e3:.1f} K"
-
-    return f"₹{value:,.0f}"
-
-
-# ==================================================
-# 5. PREPARE DATA
-# ==================================================
-def prepare_sales(sales):
-    """Normalize the columns used by the Overview page."""
-
-    df = sales.copy()
-
-    if "Order_Status" in df.columns:
-        df["Order_Status"] = (
-            df["Order_Status"]
-            .astype("string")
-            .str.strip()
-            .str.lower()
-        )
-
-    if "Total_Amount" in df.columns:
-        df["Total_Amount"] = pd.to_numeric(
-            df["Total_Amount"],
-            errors="coerce",
-        ).fillna(0)
-
-    if "Order_Date" in df.columns:
-        df["Order_Date"] = pd.to_datetime(
-            df["Order_Date"],
-            errors="coerce",
-        )
-
-    if "Category" in df.columns:
-        df["Category"] = (
-            df["Category"]
-            .fillna("Unknown")
-            .astype(str)
-            .str.strip()
-            .replace("", "Unknown")
-        )
-
-    return df
-
-
-# ==================================================
-# 6. SALES TREND
-# ==================================================
-def render_sales_trend(delivered):
-    """Render daily/monthly recorded amounts and highlights."""
-
-    st.markdown("### Sales Trend")
-
-    trend_mode = st.radio(
-        "Trend frequency",
-        options=["Daily", "Monthly"],
-        horizontal=True,
-        key="overview_sales_trend_mode",
+    text = (
+        f"{adjective} sales stayed within ±{spread:.0f}% of the {ui.format_compact_inr(average)} average. "
+        f"The lowest {noun} was {ui.format_compact_inr(low)} and the highest {ui.format_compact_inr(high)}."
     )
+    lead = "Steady sales." if mode != "Daily" and spread <= 12 else ""
+    return lead, text
 
-    if delivered.empty:
-        st.info("No delivered sales match the selected filters.")
-        return
 
-    source = delivered.dropna(subset=["Order_Date"]).copy()
+def show_chart(fig, key):
+    """Full-width chart (Streamlit 1.65 stretches charts by default)."""
+    st.plotly_chart(fig, key=key, config={"displayModeBar": False})
 
-    if source.empty:
-        st.info("No valid order dates are available.")
-        return
 
-    # --------------------------------------------------
-    # DAILY AGGREGATION
-    # --------------------------------------------------
-    if trend_mode == "Daily":
-        source["Period"] = source["Order_Date"].dt.normalize()
+def render_trend(delivered, start, end):
+    with st.container(key="sv_panel_trend"):
+        days = (pd.Timestamp(end) - pd.Timestamp(start)).days + 1
+        title_col, picker_col = st.columns([2, 3], vertical_alignment="center")
 
-        trend = (
-            source.groupby("Period", as_index=False)
-            .agg(Total_Amount=("Total_Amount", "sum"))
-            .sort_values("Period")
-        )
+        with picker_col:
+            mode = granularity_picker(days)
 
-        all_periods = pd.date_range(
-            start=trend["Period"].min(),
-            end=trend["Period"].max(),
-            freq="D",
-        )
+        subtitle = {
+            "Daily": "Recorded amount per day",
+            "Weekly": "Recorded amount per week, weeks start on Monday",
+            "Monthly": "Recorded amount per month",
+        }[mode]
+        with title_col:
+            st.markdown(ui.panel_title("Sales trend", subtitle), unsafe_allow_html=True)
 
-        trend = (
-            trend.set_index("Period")
-            .reindex(all_periods, fill_value=0)
-            .rename_axis("Period")
-            .reset_index()
-        )
+        if delivered.empty:
+            st.info("No delivered orders match the selected filters.")
+            return
 
-        trend["Moving_Average"] = (
-            trend["Total_Amount"]
-            .rolling(window=7, min_periods=1)
-            .mean()
-        )
+        trend, ma_label = build_trend(delivered, mode, start, end)
+        pool = trend[~trend["Partial"]]
+        if pool.empty:
+            pool = trend
 
-        average_label = "Average Daily Amount"
-        highest_label = "Highest-Sales Day"
-        lowest_label = "Lowest-Sales Day"
-        moving_label = "7-Day Moving Average"
-        average_value = format_compact_inr(
-            trend["Total_Amount"].mean()
-        )
+        noun = {"Daily": "day", "Weekly": "week", "Monthly": "month"}[mode]
+        label_fmt = {"Daily": "%d %b %Y", "Weekly": "Week of %d %b %Y", "Monthly": "%b %Y"}[mode]
+        best = pool.loc[pool["Amount"].idxmax()]
+        worst = pool.loc[pool["Amount"].idxmin()]
+        average = float(pool["Amount"].mean())
 
-        period_format = "%d %b %Y"
-        axis_format = "%b %d\n%Y"
-
-    # --------------------------------------------------
-    # MONTHLY AGGREGATION
-    # --------------------------------------------------
-    else:
-        source["Period"] = (
-            source["Order_Date"]
-            .dt.to_period("M")
-            .dt.to_timestamp()
-        )
-
-        trend = (
-            source.groupby("Period", as_index=False)
-            .agg(Total_Amount=("Total_Amount", "sum"))
-            .sort_values("Period")
-        )
-
-        all_periods = pd.date_range(
-            start=trend["Period"].min(),
-            end=trend["Period"].max(),
-            freq="MS",
-        )
-
-        trend = (
-            trend.set_index("Period")
-            .reindex(all_periods, fill_value=0)
-            .rename_axis("Period")
-            .reset_index()
-        )
-
-        trend["Moving_Average"] = (
-            trend["Total_Amount"]
-            .rolling(window=3, min_periods=1)
-            .mean()
-        )
-
-        average_label = "Average Monthly Amount"
-        highest_label = "Highest-Sales Month"
-        lowest_label = "Lowest-Sales Month"
-        moving_label = "3-Month Moving Average"
-        average_value = format_compact_inr(
-            trend["Total_Amount"].mean()
-        )
-
-        period_format = "%b %Y"
-        axis_format = "%b %Y"
-
-    if trend.empty:
-        st.info("No trend data is available.")
-        return
-
-    # --------------------------------------------------
-    # FIND HIGHEST AND LOWEST PERIODS
-    # --------------------------------------------------
-    highest_row = trend.loc[trend["Total_Amount"].idxmax()]
-    lowest_row = trend.loc[trend["Total_Amount"].idxmin()]
-
-    highest_date = pd.Timestamp(highest_row["Period"])
-    lowest_date = pd.Timestamp(lowest_row["Period"])
-
-    highest_text = highest_date.strftime(period_format)
-    lowest_text = lowest_date.strftime(period_format)
-
-    # --------------------------------------------------
-    # RESPONSIVE KPI CARDS
-    # Use custom HTML to avoid Streamlit metric truncation.
-    # --------------------------------------------------
-    st.markdown("#### Trend Highlights")
-
-    k1, k2, k3 = st.columns([1.1, 1, 1], gap="small")
-
-    with k1:
         st.markdown(
-            f"""
-            <div style="
-                background:#FFFFFF;
-                border:1px solid #E2E8F0;
-                border-radius:16px;
-                padding:18px 16px;
-                min-height:112px;
-                box-sizing:border-box;
-                box-shadow:0 4px 16px rgba(30,41,59,0.05);
-            ">
-                <div style="
-                    color:#475569;
-                    font-size:13px;
-                    line-height:1.4;
-                    margin-bottom:12px;
-                ">{average_label}</div>
-                <div style="
-                    color:{NAVY};
-                    font-size:clamp(18px,1.6vw,27px);
-                    font-weight:750;
-                    line-height:1.3;
-                    overflow-wrap:anywhere;
-                ">{average_value}</div>
-            </div>
-            """,
+            ui.stat_row([
+                (f"Average per {noun}", ui.format_compact_inr(average), ""),
+                (f"Best {noun}", ui.format_compact_inr(best["Amount"]), best["Period"].strftime(label_fmt)),
+                (f"Lowest {noun}", ui.format_compact_inr(worst["Amount"]), worst["Period"].strftime(label_fmt)),
+            ]),
             unsafe_allow_html=True,
         )
 
-    with k2:
-        st.markdown(
-            f"""
-            <div style="
-                background:#FFFFFF;
-                border:1px solid #E2E8F0;
-                border-radius:16px;
-                padding:18px 16px;
-                min-height:112px;
-                box-sizing:border-box;
-                box-shadow:0 4px 16px rgba(30,41,59,0.05);
-            ">
-                <div style="
-                    color:#475569;
-                    font-size:13px;
-                    line-height:1.4;
-                    margin-bottom:12px;
-                ">{highest_label}</div>
-                <div style="
-                    color:{NAVY};
-                    font-size:clamp(17px,1.4vw,24px);
-                    font-weight:750;
-                    line-height:1.3;
-                    overflow-wrap:anywhere;
-                ">{highest_text}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Amount: {format_compact_inr(highest_row['Total_Amount'])}"
-        )
+        show_chart(trend_figure(trend, mode, ma_label, average), "overview_trend_chart")
 
-    with k3:
-        st.markdown(
-            f"""
-            <div style="
-                background:#FFFFFF;
-                border:1px solid #E2E8F0;
-                border-radius:16px;
-                padding:18px 16px;
-                min-height:112px;
-                box-sizing:border-box;
-                box-shadow:0 4px 16px rgba(30,41,59,0.05);
-            ">
-                <div style="
-                    color:#475569;
-                    font-size:13px;
-                    line-height:1.4;
-                    margin-bottom:12px;
-                ">{lowest_label}</div>
-                <div style="
-                    color:{NAVY};
-                    font-size:clamp(17px,1.4vw,24px);
-                    font-weight:750;
-                    line-height:1.3;
-                    overflow-wrap:anywhere;
-                ">{lowest_text}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Amount: {format_compact_inr(lowest_row['Total_Amount'])}"
-        )
+        lead, insight = trend_insight(pool, mode)
+        if insight:
+            st.markdown(ui.insight_note(insight, lead), unsafe_allow_html=True)
 
-    # --------------------------------------------------
-    # TREND CHART
-    # --------------------------------------------------
-    fig = px.line(
-        trend,
-        x="Period",
-        y=["Total_Amount", "Moving_Average"],
-        color_discrete_map={
-            "Total_Amount": LIGHT_INDIGO,
-            "Moving_Average": TEAL,
-        },
-        labels={
-            "Period": "Order Date",
-            "value": "Recorded Amount (₹)",
-            "variable": "Series",
-        },
-    )
-
-    fig.update_traces(
-        selector=dict(name="Total_Amount"),
-        name=(
-            "Daily Recorded Amount"
-            if trend_mode == "Daily"
-            else "Monthly Recorded Amount"
-        ),
-        line=dict(color=LIGHT_INDIGO, width=2),
-        hovertemplate=(
-            "Period: %{x|%d %b %Y}"
-            "<br>Recorded amount: ₹%{y:,.2f}"
-            "<extra></extra>"
-        ),
-    )
-
-    fig.update_traces(
-        selector=dict(name="Moving_Average"),
-        name=moving_label,
-        line=dict(color=TEAL, width=3.5),
-        hovertemplate=(
-            "Period: %{x|%d %b %Y}"
-            "<br>Moving average: ₹%{y:,.2f}"
-            "<extra></extra>"
-        ),
-    )
-
-    fig.update_layout(
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="center",
-            x=0.5,
-        ),
-    )
-
-    fig.update_yaxes(
-        title="Recorded Amount (₹)",
-        tickformat="~s",
-    )
-
-    fig.update_xaxes(
-        title="Order Date",
-        nticks=9,
-        tickformat=axis_format,
-    )
-
-    style_chart(fig, height=400)
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        key="overview_sales_trend_chart",
-    )
-
-    st.caption(
-        f"Legend: the lighter line shows recorded amounts; "
-        f"the teal line shows the {moving_label.lower()}. "
-        "Amounts are recorded Total Amount, not profit."
-    )
+        if trend["Partial"].any() and mode != "Daily":
+            st.caption(f"Lighter bars cover only part of a {noun}, so they are left out of the average.")
 
 
 # ==================================================
-# 7. ORDER STATUS DONUT
+# 5. ORDER OUTCOMES
 # ==================================================
-def render_order_status(sales):
-    """Display the distribution of all filtered orders."""
+def render_outcomes(df):
+    with st.container(key="sv_panel_outcomes"):
+        st.markdown(ui.panel_title("Order outcomes", "Share of all filtered orders"), unsafe_allow_html=True)
 
-    st.markdown("### Order Status")
+        total = len(df)
+        if total == 0:
+            st.info("No orders match the selected filters.")
+            return
 
+        counts = df["Order_Status"].value_counts()
+        ordered = [s for s in STATUS_ORDER if s in counts.index]
+        ordered += [s for s in counts.index if s not in STATUS_ORDER]
+
+        delivered_share = counts.get("delivered", 0) / total * 100
+
+        segments = "".join(
+            f'<span style="width:{counts[s] / total * 100:.3f}%;'
+            f'background:{STATUS_COLORS.get(s, "#94A3B8")}"></span>'
+            for s in ordered
+        )
+        rows = "".join(
+            '<div class="sv-legend-row">'
+            f'<div class="sv-dot" style="background:{STATUS_COLORS.get(s, "#94A3B8")}"></div>'
+            f"<div>{ui.esc(s.title())}</div>"
+            f'<div class="sv-num">{counts[s]:,}</div>'
+            f'<div class="sv-pct">{counts[s] / total * 100:.1f}%</div>'
+            "</div>"
+            for s in ordered
+        )
+
+        in_flight = (counts.get("shipped", 0) + counts.get("processing", 0)) / total * 100
+        lost = (counts.get("returned", 0) + counts.get("cancelled", 0)) / total * 100
+        notes = ""
+        if in_flight:
+            notes += f"<div><b>{in_flight:.1f}%</b> still shipped or processing</div>"
+        if lost:
+            notes += f"<div><b>{lost:.1f}%</b> returned or cancelled</div>"
+        notes_html = f'<div class="sv-notes">{notes}</div>' if notes else ""
+
+        st.markdown(
+            ui._html(
+                f'<div class="sv-big">{delivered_share:.1f}%</div>'
+                '<div class="sv-big-sub">of orders delivered</div>'
+                f'<div class="sv-stack">{segments}</div>'
+                f'<div class="sv-legend">{rows}</div>'
+                f"{notes_html}"
+            ),
+            unsafe_allow_html=True,
+        )
+
+
+# ==================================================
+# 6. CATEGORY AND STATE RANKINGS
+# ==================================================
+def ranked_panel(delivered, column, key, title, subtitle, limit=None):
+    with st.container(key=key):
+        st.markdown(ui.panel_title(title, subtitle), unsafe_allow_html=True)
+
+        if delivered.empty or column not in delivered.columns:
+            st.info("No delivered orders match the selected filters.")
+            return
+
+        grouped = (
+            delivered.groupby(column)["Total_Amount"].sum()
+            .sort_values(ascending=False)
+        )
+        total = grouped.sum()
+        if total <= 0:
+            st.info("No delivered amount to rank.")
+            return
+
+        shown = grouped.head(limit) if limit else grouped
+        top = shown.iloc[0]
+        rows = [
+            (str(name), ui.format_crore(amount), amount / total * 100, amount / top * 100)
+            for name, amount in shown.items()
+        ]
+        st.markdown(ui.ranked_bars(rows), unsafe_allow_html=True)
+
+        if limit and len(grouped) > limit:
+            rest = grouped.iloc[limit:].sum() / total * 100
+            st.caption(f"The other {len(grouped) - limit} together make up {rest:.1f}%.")
+
+
+# ==================================================
+# 7. MAIN ENTRY POINT
+# ==================================================
+def render(sales, customers, products, context=None):
+    """
+    Render the Overview page.
+
+    `context` is optional and lets the page compare with the previous period:
+        {"full_sales": sales, "start": start_date, "end": end_date, "states": selected_states}
+    """
     if sales.empty:
-        st.info("No order status data is available.")
+        st.warning("No sales records match the selected date and state filters.")
         return
 
-    status_data = (
-        sales["Order_Status"]
-        .fillna("unknown")
-        .astype(str)
-        .str.strip()
-        .str.title()
-        .value_counts()
-        .rename_axis("Order Status")
-        .reset_index(name="Orders")
-    )
-
-    status_colors = {
-        "Delivered": INDIGO,
-        "Processing": BLUE,
-        "Shipped": TEAL,
-        "Cancelled": AMBER,
-        "Returned": CORAL,
-        "Unknown": "#94A3B8",
-    }
-
-    fig = px.pie(
-        status_data,
-        names="Order Status",
-        values="Orders",
-        hole=0.62,
-        color="Order Status",
-        color_discrete_map=status_colors,
-    )
-
-    fig.update_traces(
-        textposition="inside",
-        textinfo="percent",
-        textfont=dict(color="#FFFFFF", size=12),
-        hovertemplate=(
-            "Status: %{label}"
-            "<br>Orders: %{value:,}"
-            "<br>Share: %{percent}"
-            "<extra></extra>"
-        ),
-    )
-
-    total_orders = int(status_data["Orders"].sum())
-
-    fig.update_layout(
-        showlegend=True,
-        legend=dict(
-            title_text="",
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="center",
-            x=0.5,
-            font=dict(size=10, color=NAVY),
-        ),
-        margin=dict(l=10, r=10, t=65, b=15),
-        annotations=[
-            dict(
-                text=(
-                    f"<b>{total_orders:,}</b>"
-                    "<br><span style='font-size:12px'>Orders</span>"
-                ),
-                x=0.5,
-                y=0.5,
-                showarrow=False,
-                font=dict(size=20, color=NAVY),
-            )
-        ],
-    )
-
-    style_chart(fig, height=400)
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        key="overview_order_status_chart",
-    )
-
-    st.caption(
-        "Order counts and percentages are based on all filtered orders."
-    )
-
-
-# ==================================================
-# 8. CATEGORY SALES CHART
-# ==================================================
-def render_category_sales(delivered):
-    """Compare recorded delivered amounts by category."""
-
-    st.markdown("### Delivered Sales by Product Category")
-
-    if delivered.empty or "Category" not in delivered.columns:
-        st.info("No category sales data is available.")
-        return
-
-    category_data = (
-        delivered.groupby("Category", dropna=False)
-        .agg(Total_Amount=("Total_Amount", "sum"))
-        .reset_index()
-    )
-
-    category_data["Category"] = (
-        category_data["Category"]
-        .fillna("Unknown")
-        .astype(str)
-    )
-
-    category_data = category_data.sort_values(
-        "Total_Amount",
-        ascending=True,
-    )
-
-    if category_data.empty:
-        st.info("No category sales data is available.")
-        return
-
-    total_amount = category_data["Total_Amount"].sum()
-
-    category_data["Sales_Cr"] = (
-        category_data["Total_Amount"] / 1e7
-    )
-
-    category_data["Sales_Share"] = (
-        category_data["Total_Amount"] / total_amount * 100
-        if total_amount
-        else 0
-    )
-
-    top_category = category_data.loc[
-        category_data["Total_Amount"].idxmax(),
-        "Category",
-    ]
-
-    category_data["Bar_Color"] = category_data["Category"].apply(
-        lambda category: (
-            "Leading category"
-            if category == top_category
-            else "Other categories"
-        )
-    )
-
-    fig = px.bar(
-        category_data,
-        x="Sales_Cr",
-        y="Category",
-        orientation="h",
-        color="Bar_Color",
-        color_discrete_map={
-            "Leading category": TEAL,
-            "Other categories": LIGHT_INDIGO,
-        },
-        custom_data=["Total_Amount", "Sales_Share"],
-        labels={
-            "Sales_Cr": "Delivered Sales (₹ Cr)",
-            "Category": "",
-            "Bar_Color": "",
-        },
-    )
-
-    fig.update_traces(
-        texttemplate="₹%{x:.2f} Cr",
-        textposition="outside",
-        cliponaxis=False,
-        hovertemplate=(
-            "<b>%{y}</b>"
-            "<br>Recorded amount: ₹%{customdata[0]:,.2f}"
-            "<br>Share of delivered amount: %{customdata[1]:.2f}%"
-            "<extra></extra>"
-        ),
-    )
-
-    max_sales = max(category_data["Sales_Cr"].max(), 0)
-
-    fig.update_layout(
-        margin=dict(l=20, r=100, t=20, b=45),
-        showlegend=False,
-    )
-
-    fig.update_xaxes(
-        title="Delivered Sales (₹ Cr)",
-        range=[0, max_sales * 1.20 if max_sales > 0 else 1],
-        tickformat=".0f",
-    )
-
-    fig.update_yaxes(
-        title="",
-        categoryorder="total ascending",
-    )
-
-    style_chart(fig, height=360)
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        key="overview_category_sales_chart",
-    )
-
-    st.caption(
-        "Teal highlights the leading category. "
-        "Amounts represent recorded Total Amount, not profit."
-    )
-
-
-# ==================================================
-# 9. MAIN OVERVIEW PAGE
-# ==================================================
-def render(sales, customers, products):
-    """Render the complete SalesVision Overview dashboard."""
-
-    apply_overview_styles()
-
-    st.markdown("## Business Performance")
-
-    st.caption(
-        "Monitor recorded order amounts, delivery performance, "
-        "order status and product category performance."
-    )
-
-    if sales.empty:
-        st.warning(
-            "No sales records match the selected date and state filters."
-        )
+    if not {"Order_Status", "Total_Amount"}.issubset(sales.columns):
+        st.error("The sales data must contain Order_Status and Total_Amount.")
         return
 
     df = prepare_sales(sales)
+    delivered = df[df["Order_Status"].eq("delivered")]
 
-    required_columns = {"Order_Status", "Total_Amount"}
-
-    if not required_columns.issubset(df.columns):
-        st.error(
-            "The sales data must contain Order_Status and Total_Amount."
-        )
+    valid_dates = df["Order_Date"].dropna()
+    if valid_dates.empty:
+        st.warning("No valid order dates were found for the selected filters.")
         return
 
-    # --------------------------------------------------
-    # TOP KPI CALCULATIONS
-    # --------------------------------------------------
-    total_orders = len(df)
+    start = context["start"] if context and context.get("start") else valid_dates.min()
+    end = context["end"] if context and context.get("end") else valid_dates.max()
 
-    status = df["Order_Status"]
+    render_header(df, delivered, start, end)
+    render_kpis(df, context)
 
-    delivered = df[status == "delivered"].copy()
+    left, right = st.columns([2.1, 1], gap="medium")
+    with left:
+        render_trend(delivered, start, end)
+    with right:
+        render_outcomes(df)
 
-    delivered_orders = len(delivered)
-    delivered_amount = delivered["Total_Amount"].sum()
-
-    delivery_rate = (
-        delivered_orders / total_orders * 100
-        if total_orders
-        else 0
-    )
-
-    return_rate = (
-        status.eq("returned").sum() / total_orders * 100
-        if total_orders
-        else 0
-    )
-
-    # --------------------------------------------------
-    # BUSINESS PERFORMANCE CARDS
-    # --------------------------------------------------
-    st.markdown("### Key Performance Indicators")
-
-    c1, c2, c3, c4 = st.columns(4, gap="medium")
-
-    c1.metric(
-        "Delivered Sales Amount",
-        format_crore(delivered_amount),
-        help="Recorded Total_Amount for delivered orders.",
-    )
-
-    c2.metric(
-        "Total Orders",
-        f"{total_orders:,}",
-        help="All orders matching the current dashboard filters.",
-    )
-
-    c3.metric(
-        "Order Delivery Rate",
-        f"{delivery_rate:.2f}%",
-        help="Delivered orders divided by all filtered orders.",
-    )
-
-    c4.metric(
-        "Order Return Rate",
-        f"{return_rate:.2f}%",
-        help="Returned orders divided by all filtered orders.",
-    )
+    left, right = st.columns(2, gap="medium")
+    with left:
+        ranked_panel(delivered, "Category", "sv_panel_category",
+                     "Sales by category", "Share of delivered sales")
+    with right:
+        n_categories = delivered["Category"].nunique() if "Category" in delivered.columns else 5
+        ranked_panel(delivered, "State", "sv_panel_states",
+                     "Top states", "Share of delivered sales",
+                     limit=max(5, min(n_categories, 8)))
 
     st.caption(
-        "Amounts represent recorded Total Amount. "
-        "They are not profit or verified accounting revenue."
+        "Amounts are recorded Total Amount from delivered orders, not profit or audited revenue. "
+        "Changes compare with the period of equal length before the selected dates."
     )
-
-    st.divider()
-
-    # --------------------------------------------------
-    # TREND + ORDER STATUS
-    # --------------------------------------------------
-    left, right = st.columns([1.65, 1], gap="large")
-
-    with left:
-        render_sales_trend(delivered)
-
-    with right:
-        render_order_status(df)
-
-    st.divider()
-
-    # --------------------------------------------------
-    # CATEGORY SALES
-    # --------------------------------------------------
-    render_category_sales(delivered)
